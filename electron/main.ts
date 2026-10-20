@@ -250,26 +250,49 @@ function createTrayIcon(): Electron.NativeImage {
 }
 
 function ensureDynasisIcoFile(): string {
-  const icoPath = path.join(tempDir, 'dynasis.ico')
+  const exeDir = path.dirname(process.execPath)
+  const primaryIco = path.join(exeDir, 'dynasis.ico')
+  const fallbackIco = path.join(tempDir, 'dynasis.ico')
+
+  const writeIco = (targetPath: string) => {
+    const png = createTrayPngBuffer()
+    const header = Buffer.alloc(22)
+    header.writeUInt16LE(0, 0) // Reserved
+    header.writeUInt16LE(1, 2) // Type: 1 = ICO
+    header.writeUInt16LE(1, 4) // Image count: 1
+    header[6] = 32 // Width
+    header[7] = 32 // Height
+    header[8] = 0 // Color palette
+    header[9] = 0 // Reserved
+    header.writeUInt16LE(1, 10) // Color planes
+    header.writeUInt16LE(32, 12) // Bits per pixel
+    header.writeUInt32LE(png.length, 14) // Image byte size
+    header.writeUInt32LE(22, 18) // Offset (6 + 16)
+    fs.writeFileSync(targetPath, Buffer.concat([header, png]))
+  }
+
   try {
-    if (!fs.existsSync(icoPath)) {
-      const png = createTrayPngBuffer()
-      const header = Buffer.alloc(22)
-      header.writeUInt16LE(0, 0) // Reserved
-      header.writeUInt16LE(1, 2) // Type: 1 = ICO
-      header.writeUInt16LE(1, 4) // Image count: 1
-      header[6] = 32 // Width
-      header[7] = 32 // Height
-      header[8] = 0 // Color palette
-      header[9] = 0 // Reserved
-      header.writeUInt16LE(1, 10) // Color planes
-      header.writeUInt16LE(32, 12) // Bits per pixel
-      header.writeUInt32LE(png.length, 14) // Image byte size
-      header.writeUInt32LE(22, 18) // Offset (6 + 16)
-      fs.writeFileSync(icoPath, Buffer.concat([header, png]))
-    }
-  } catch {}
-  return icoPath
+    if (!fs.existsSync(primaryIco)) writeIco(primaryIco)
+    return primaryIco
+  } catch {
+    try {
+      if (!fs.existsSync(fallbackIco)) writeIco(fallbackIco)
+    } catch {}
+    return fallbackIco
+  }
+}
+
+function ensureDynasisStartupCmd(): string {
+  const exeDir = path.dirname(process.execPath)
+  const exeName = path.basename(process.execPath)
+  const cmdPath = path.join(exeDir, 'Dynasis-Start.cmd')
+  try {
+    const content = `@echo off\r\nstart "" "%~dp0${exeName}"\r\n`
+    fs.writeFileSync(cmdPath, content, 'ascii')
+    return cmdPath
+  } catch {
+    return process.execPath
+  }
 }
 
 const RUN_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
@@ -375,8 +398,9 @@ function setAutoStartEnabled(enabled: boolean): boolean {
   if (enabled) {
     try {
       const icoPath = ensureDynasisIcoFile()
+      const cmdPath = ensureDynasisStartupCmd()
       shell.writeShortcutLink(lnkPath, 'create', {
-        target: process.execPath,
+        target: cmdPath,
         cwd: path.dirname(process.execPath),
         description: 'Dynasis — Dynamic System Island',
         icon: icoPath,

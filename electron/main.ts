@@ -78,31 +78,37 @@ if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true })
 }
 
+function isPhysicalPath(p: string): boolean {
+  const lower = p.toLowerCase()
+  if (lower.includes('app.asar') && !lower.includes('app.asar.unpacked')) {
+    return false
+  }
+  return fs.existsSync(p)
+}
+
 function getPreloadPath(): string {
   const candidates = [
     path.join(process.resourcesPath, 'app.asar.unpacked/electron/preload.cjs'),
+    path.join(process.cwd(), 'electron/preload.cjs'),
     path.join(__dirname, '../electron/preload.cjs'),
     path.join(__dirname, 'preload.cjs'),
-    path.join(app.getAppPath(), 'electron/preload.cjs'),
-    path.join(app.getAppPath(), 'dist-electron/preload.cjs'),
   ]
   for (const p of candidates) {
-    if (fs.existsSync(p)) return p
+    if (isPhysicalPath(p)) return p
   }
   return candidates[0]
 }
 
 function getScriptPath(scriptName: string): string {
   const candidates = [
-    path.join(__dirname, '../electron/scripts', scriptName),
-    path.join(__dirname, 'scripts', scriptName),
-    path.join(process.cwd(), 'electron/scripts', scriptName),
-    path.join(app.getAppPath(), 'electron/scripts', scriptName),
     path.join(process.resourcesPath, 'scripts', scriptName),
     path.join(process.resourcesPath, 'app.asar.unpacked/electron/scripts', scriptName),
+    path.join(process.cwd(), 'electron/scripts', scriptName),
+    path.join(__dirname, '../electron/scripts', scriptName),
+    path.join(__dirname, 'scripts', scriptName),
   ]
   for (const p of candidates) {
-    if (fs.existsSync(p)) return p
+    if (isPhysicalPath(p)) return p
   }
   return candidates[0]
 }

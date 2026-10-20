@@ -9,7 +9,6 @@ import {
   EyeOff,
   ChevronUp,
   Zap,
-  BatteryCharging,
   Move,
   RotateCcw,
   Power,
@@ -17,13 +16,27 @@ import {
   Play,
   Pause,
   SkipForward,
+  AppWindow,
+  MessageSquare,
+  Globe,
+  Code2,
+  VolumeX,
+  MicOff,
+  ExternalLink,
 } from 'lucide-react'
 import { Island, IslandState, NotchStyle } from './components/Island'
 import { MediaIsland, MediaState } from './components/MediaIsland'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
 import { BatteryHUD, BatteryState } from './components/BatteryHUD'
 
-export type ExpandedView = 'overview' | 'media' | 'shelf' | 'settings'
+export type ExpandedView = 'overview' | 'apps' | 'media' | 'shelf' | 'settings'
+
+export interface SyncedAppItem {
+  id: string
+  name: string
+  isRunning: boolean
+  windowTitle: string
+}
 
 interface DynasisPreferences {
   openOnHover: boolean
@@ -67,13 +80,20 @@ export default function App() {
   const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
   const [media, setMedia] = useState<MediaState>({
     title: 'No media playing',
-    artist: 'Play music in Spotify or browser',
+    artist: 'Klik Play untuk otomatis membuka & memutar Spotify',
     albumArt: undefined,
     isPlaying: false,
     duration: 0,
     position: 0,
     updatedAt: Date.now(),
   })
+  const [syncedApps, setSyncedApps] = useState<SyncedAppItem[]>([
+    { id: 'spotify', name: 'Spotify', isRunning: false, windowTitle: '' },
+    { id: 'discord', name: 'Discord', isRunning: false, windowTitle: '' },
+    { id: 'browser', name: 'Browser', isRunning: false, windowTitle: '' },
+    { id: 'vscode', name: 'VS Code', isRunning: false, windowTitle: '' },
+  ])
+  const [activeForegroundApp, setActiveForegroundApp] = useState<string>('')
 
   const [clockText, setClockText] = useState('')
   const [countdownFraction, setCountdownFraction] = useState<number | null>(null)
@@ -322,7 +342,31 @@ export default function App() {
     window.dynasis?.getAutoStart?.().then((on) => {
       setAutoStart(Boolean(on))
     })
+
+    window.dynasis?.getAppsStatus?.().then((data) => {
+      if (data && Array.isArray(data.apps)) {
+        setSyncedApps(data.apps)
+        if (data.activeApp) setActiveForegroundApp(data.activeApp)
+      }
+    })
   }, [])
+
+  // 0. Live Desktop Apps (Discord, Spotify, Browser, VS Code) listener
+  useEffect(() => {
+    if (!window.dynasis?.onAppsStateChanged) return
+    return window.dynasis.onAppsStateChanged((data) => {
+      if (data && Array.isArray(data.apps)) {
+        setSyncedApps(data.apps)
+        if (typeof data.activeApp === 'string') {
+          setActiveForegroundApp(data.activeApp)
+        }
+      }
+    })
+  }, [])
+
+  const handleAppAction = async (target: string, command = 'open') => {
+    await window.dynasis?.appAction?.(target, command)
+  }
 
   // 1. Native Screenshot Capture listener
   useEffect(() => {
@@ -724,10 +768,23 @@ export default function App() {
                       ? 'bg-[#1d1f23] text-[#f5f6f8]'
                       : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.06]'
                   }`}
-                  title="Overview (Media + Quick Pills)"
+                  title="Overview (Media + Discord + Quick Pills)"
                 >
                   <Home className="w-3 h-3" />
                   <span>Overview</span>
+                </button>
+
+                <button
+                  onClick={() => setView('apps')}
+                  className={`flex items-center gap-1.5 px-2.5 h-6 rounded-full text-[11px] font-medium transition-colors ${
+                    view === 'apps'
+                      ? 'bg-[#1d1f23] text-[#f5f6f8]'
+                      : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.06]'
+                  }`}
+                  title="Sinkronisasi & Peluncur Aplikasi (Discord, Spotify, Browser, VS Code)"
+                >
+                  <AppWindow className="w-3 h-3 text-indigo-400" />
+                  <span>Apps</span>
                 </button>
 
                 <button
@@ -849,23 +906,24 @@ export default function App() {
                       onNext={() => handleMediaAction('next')}
                       onPrevious={() => handleMediaAction('previous')}
                       onSeek={(sec) => handleMediaAction('seek', sec)}
+                      onOpenApp={() => handleAppAction('spotify', 'open')}
                     />
                   </div>
 
                   <div className="flex-1 h-full rounded-[18px] bg-[#141518] border border-white/[0.05] p-2 flex flex-col justify-between gap-1.5">
                     <button
                       onClick={() => setView('shelf')}
-                      className="group w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] hover:bg-blue-500/15 border border-white/[0.06] hover:border-blue-400/40 transition-all text-left"
+                      className="group w-full flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#0e0f11] hover:bg-blue-500/15 border border-white/[0.06] hover:border-blue-400/40 transition-all text-left"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div className="w-6 h-6 rounded-lg bg-blue-500/15 flex items-center justify-center text-blue-400 flex-shrink-0">
                           <FolderPlus className="w-3.5 h-3.5" />
                         </div>
                         <div className="flex flex-col min-w-0">
-                          <span className="text-[11.5px] font-semibold text-[#f5f6f8] group-hover:text-blue-200 truncate">
+                          <span className="text-[11px] font-semibold text-[#f5f6f8] group-hover:text-blue-200 truncate">
                             Drop Shelf
                           </span>
-                          <span className="text-[10px] text-[#8e939c] truncate">
+                          <span className="text-[9.5px] text-[#8e939c] truncate">
                             {shelfItems.length > 0
                               ? `${shelfItems.length} file siap di-drag`
                               : 'Win+Shift+S / Drop file'}
@@ -877,31 +935,48 @@ export default function App() {
                       </span>
                     </button>
 
-                    <div className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06]">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-6 h-6 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 flex-shrink-0">
-                          {battery.isCharging ? (
-                            <BatteryCharging className="w-3.5 h-3.5" />
-                          ) : (
-                            <Zap className="w-3.5 h-3.5" />
-                          )}
+                    {/* Discord & Apps Quick Sync Card */}
+                    {(() => {
+                      const discordApp = syncedApps.find((a) => a.id === 'discord')
+                      const isDiscordRunning = Boolean(discordApp?.isRunning)
+                      return (
+                        <div className="w-full flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#0e0f11] border border-white/[0.06]">
+                          <button
+                            onClick={() => handleAppAction('discord', 'open')}
+                            className="flex items-center gap-2.5 min-w-0 flex-1 text-left group"
+                            title="Klik untuk membuka atau memfokuskan Discord"
+                          >
+                            <div className="w-6 h-6 rounded-lg bg-indigo-500/15 flex items-center justify-center text-indigo-400 flex-shrink-0">
+                              <MessageSquare className="w-3.5 h-3.5" />
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] font-semibold text-[#f5f6f8] group-hover:text-indigo-300 truncate">
+                                  Discord
+                                </span>
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full ${
+                                    isDiscordRunning ? 'bg-emerald-400' : 'bg-white/25'
+                                  }`}
+                                />
+                              </div>
+                              <span className="text-[9.5px] text-[#8e939c] truncate">
+                                {isDiscordRunning
+                                  ? discordApp?.windowTitle || 'Aktif · Klik fokus'
+                                  : 'Tertutup · Klik buka'}
+                              </span>
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => setView('apps')}
+                            className="px-2 py-0.5 rounded-full text-[9.5px] font-medium bg-indigo-500/20 hover:bg-indigo-500/35 text-indigo-300 transition-colors flex-shrink-0"
+                            title="Buka tab Apps Hub"
+                          >
+                            Apps ↗
+                          </button>
                         </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate">
-                            {battery.isCharging ? 'Charging' : 'Battery Power'}
-                          </span>
-                          <div className="w-20 h-1.5 bg-white/10 rounded-full overflow-hidden mt-1">
-                            <div
-                              className="h-full bg-emerald-400 rounded-full"
-                              style={{ width: `${battery.level}%` }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                      <span className="text-[11px] font-mono font-bold text-emerald-400 tabular-nums">
-                        {battery.level}%
-                      </span>
-                    </div>
+                      )
+                    })()}
 
                     <div className="flex items-center gap-1.5">
                       <button
@@ -929,6 +1004,134 @@ export default function App() {
                 </div>
               )}
 
+              {/* VIEW 1B: APPS & SYSTEM CONTROL HUB (Spotify, Discord, Browser, VS Code + Audio) */}
+              {!isDragOver && view === 'apps' && (
+                <div className="w-full h-full rounded-[18px] bg-[#141518] border border-white/[0.05] px-3 py-2 flex flex-col justify-between">
+                  <div className="grid grid-cols-2 gap-2">
+                    {syncedApps.map((appItem) => {
+                      const isSpotify = appItem.id === 'spotify'
+                      const isDiscord = appItem.id === 'discord'
+                      const isBrowser = appItem.id === 'browser'
+                      return (
+                        <div
+                          key={appItem.id}
+                          className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                        >
+                          <button
+                            onClick={() => handleAppAction(appItem.id, 'open')}
+                            className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                            title={`Klik untuk membuka atau memfokuskan ${appItem.name}`}
+                          >
+                            <div
+                              className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                                isSpotify
+                                  ? 'bg-emerald-500/15 text-emerald-400'
+                                  : isDiscord
+                                    ? 'bg-indigo-500/15 text-indigo-400'
+                                    : isBrowser
+                                      ? 'bg-sky-500/15 text-sky-400'
+                                      : 'bg-violet-500/15 text-violet-400'
+                              }`}
+                            >
+                              {isSpotify ? (
+                                <Music className="w-3.5 h-3.5" />
+                              ) : isDiscord ? (
+                                <MessageSquare className="w-3.5 h-3.5" />
+                              ) : isBrowser ? (
+                                <Globe className="w-3.5 h-3.5" />
+                              ) : (
+                                <Code2 className="w-3.5 h-3.5" />
+                              )}
+                            </div>
+                            <div className="flex flex-col min-w-0 pr-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] font-semibold text-[#f5f6f8] truncate">
+                                  {appItem.name}
+                                </span>
+                                <span
+                                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                    appItem.isRunning ? 'bg-emerald-400' : 'bg-white/20'
+                                  }`}
+                                />
+                              </div>
+                              <span className="text-[9.5px] text-[#8e939c] truncate">
+                                {appItem.isRunning
+                                  ? appItem.windowTitle || 'Berjalan di sistem'
+                                  : 'Tertutup · Klik buka'}
+                              </span>
+                            </div>
+                          </button>
+
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            {isSpotify && (
+                              <button
+                                onClick={() => handleAppAction('spotify', 'play')}
+                                className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/30 text-[10px] font-semibold text-emerald-300 flex items-center gap-1 transition-colors"
+                                title="Buka Spotify & langsung putar musik (bahkan saat Spotify tertutup)"
+                              >
+                                <Play className="w-2.5 h-2.5 fill-current" />
+                                <span>Play</span>
+                              </button>
+                            )}
+                            {isDiscord && (
+                              <button
+                                onClick={() => handleAppAction('discord', 'mute')}
+                                className="p-1.5 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/30 border border-indigo-400/30 text-indigo-300 transition-colors"
+                                title="Toggle Mute Mic Discord (Ctrl+Shift+M)"
+                              >
+                                <MicOff className="w-3 h-3" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleAppAction(appItem.id, 'open')}
+                              className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.14] text-[#c5c8cd] hover:text-white transition-colors"
+                              title={`Buka / Fokus ${appItem.name}`}
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Bottom Bar: Foreground App Indicator + System Master Volume Controls */}
+                  <div className="flex items-center justify-between pt-1 border-t border-white/[0.05]">
+                    <span className="text-[10px] text-[#8e939c] truncate max-w-[260px]">
+                      Fokus Sistem:{' '}
+                      <b className="text-[#f5f6f8]">
+                        {activeForegroundApp || 'Windows Desktop'}
+                      </b>
+                    </span>
+
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-[#8e939c] mr-1">Master Vol:</span>
+                      <button
+                        onClick={() => handleAppAction('system', 'vol-down')}
+                        className="px-2 py-0.5 rounded-md bg-white/[0.07] hover:bg-white/[0.15] text-[10px] font-mono text-[#f5f6f8] transition-colors"
+                        title="Turunkan Volume Sistem"
+                      >
+                        Vol -
+                      </button>
+                      <button
+                        onClick={() => handleAppAction('system', 'vol-mute')}
+                        className="p-1 rounded-md bg-white/[0.07] hover:bg-red-500/25 text-[#c5c8cd] hover:text-red-300 transition-colors"
+                        title="Mute / Unmute Volume Sistem"
+                      >
+                        <VolumeX className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={() => handleAppAction('system', 'vol-up')}
+                        className="px-2 py-0.5 rounded-md bg-white/[0.07] hover:bg-white/[0.15] text-[10px] font-mono text-[#f5f6f8] transition-colors"
+                        title="Naikkan Volume Sistem"
+                      >
+                        Vol +
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* VIEW 2: FULL MEDIA VIEW */}
               {!isDragOver && view === 'media' && (
                 <MediaIsland
@@ -939,6 +1142,7 @@ export default function App() {
                   onNext={() => handleMediaAction('next')}
                   onPrevious={() => handleMediaAction('previous')}
                   onSeek={(sec) => handleMediaAction('seek', sec)}
+                  onOpenApp={() => handleAppAction('spotify', 'open')}
                 />
               )}
 

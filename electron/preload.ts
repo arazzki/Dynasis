@@ -18,6 +18,7 @@ export interface DynasisAPI {
   onScreenshotCaptured: (callback: (data: { id: string; filePath?: string; dataUrl: string; timestamp: number; size?: { width: number; height: number } }) => void) => () => void
   onMediaStateChanged: (callback: (media: any) => void) => () => void
   onBatteryStateChanged: (callback: (battery: any) => void) => () => void
+  onAppsStateChanged: (callback: (data: any) => void) => () => void
   startFileDrag: (filePath: string) => void
   saveScreenshot: (dataUrl: string) => Promise<string | null>
   copyImageToClipboard: (dataUrl: string) => Promise<boolean>
@@ -25,6 +26,8 @@ export interface DynasisAPI {
   mediaAction: (action: 'play' | 'pause' | 'toggle' | 'next' | 'previous' | 'seek', value?: number) => void
   getCurrentMedia: () => Promise<any>
   getCurrentBattery: () => Promise<any>
+  getAppsStatus: () => Promise<any>
+  appAction: (target: string, command?: string) => Promise<any>
   getAutoStart: () => Promise<boolean>
   setAutoStart: (enabled: boolean) => Promise<boolean>
   minimizeApp: () => void
@@ -63,8 +66,15 @@ const api: DynasisAPI = {
     ipcRenderer.on('battery-state-changed', handler)
     return () => ipcRenderer.removeListener('battery-state-changed', handler)
   },
+  onAppsStateChanged: (callback) => {
+    const handler = (_: any, data: any) => callback(data)
+    ipcRenderer.on('apps-state-changed', handler)
+    return () => ipcRenderer.removeListener('apps-state-changed', handler)
+  },
   getCurrentMedia: () => ipcRenderer.invoke('get-current-media'),
   getCurrentBattery: () => ipcRenderer.invoke('get-current-battery'),
+  getAppsStatus: () => ipcRenderer.invoke('get-apps-status'),
+  appAction: (target: string, command = 'open') => ipcRenderer.invoke('app-action', { target, command }),
   getAutoStart: () => ipcRenderer.invoke('get-autostart'),
   setAutoStart: (enabled: boolean) => ipcRenderer.invoke('set-autostart', enabled),
   startFileDrag: (filePath: string) => ipcRenderer.send('start-file-drag', filePath),

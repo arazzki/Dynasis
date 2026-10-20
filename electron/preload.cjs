@@ -51,11 +51,24 @@ const api = {
       ipcRenderer.removeListener('battery-state-changed', handler)
     }
   },
+  onAppsStateChanged: (callback) => {
+    const handler = (_, data) => callback(data)
+    ipcRenderer.on('apps-state-changed', handler)
+    return () => {
+      ipcRenderer.removeListener('apps-state-changed', handler)
+    }
+  },
   getCurrentMedia: () => {
     return ipcRenderer.invoke('get-current-media')
   },
   getCurrentBattery: () => {
     return ipcRenderer.invoke('get-current-battery')
+  },
+  getAppsStatus: () => {
+    return ipcRenderer.invoke('get-apps-status')
+  },
+  appAction: (target, command = 'open') => {
+    return ipcRenderer.invoke('app-action', { target, command })
   },
   getAutoStart: () => {
     return ipcRenderer.invoke('get-autostart')

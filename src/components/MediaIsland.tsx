@@ -21,6 +21,7 @@ interface MediaIslandProps {
   onNext: () => void
   onPrevious: () => void
   onSeek?: (seconds: number) => void
+  onOpenApp?: () => void
 }
 
 export function formatTime(seconds: number): string {
@@ -38,6 +39,7 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
   onNext,
   onPrevious,
   onSeek,
+  onOpenApp,
 }) => {
   const [now, setNow] = useState(() => Date.now())
   const [dragFraction, setDragFraction] = useState<number | null>(null)
@@ -109,9 +111,11 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
       {/* Top Row: Artwork + Title/Artist + Equalizer */}
       <div className="relative z-10 flex items-center gap-3 min-w-0">
         <div
+          onClick={onOpenApp}
+          title="Klik untuk membuka/fokus aplikasi pemutar musik (Spotify)"
           className={`${
             compact ? 'w-11 h-11' : 'w-12 h-12'
-          } relative rounded-xl overflow-hidden shadow-md bg-[#0e0f11] flex-shrink-0 flex items-center justify-center border border-white/10`}
+          } relative rounded-xl overflow-hidden shadow-md bg-[#0e0f11] flex-shrink-0 flex items-center justify-center border border-white/10 hover:border-emerald-400/50 cursor-pointer transition-colors`}
         >
           {media.albumArt ? (
             <img
@@ -137,7 +141,7 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
             </span>
           </div>
           <span className="text-[11px] text-[#9398a1] truncate mt-0.5">
-            {media.artist || 'Play music in Spotify, YouTube, or browser'}
+            {media.artist || 'Klik Play untuk otomatis membuka & memutar Spotify'}
             {media.albumTitle ? ` · ${media.albumTitle}` : ''}
           </span>
         </div>
@@ -202,21 +206,28 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
 
       {/* Bottom Row: Media Transport Controls */}
       <div className="relative z-10 flex items-center justify-between pt-0.5">
-        <span className="text-[10px] text-[#6b7079] truncate max-w-[110px]">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenApp?.()
+          }}
+          className="text-[10px] text-[#8e939c] hover:text-emerald-400 transition-colors truncate max-w-[115px] text-left"
+          title="Klik untuk membuka atau memfokuskan jendela Spotify"
+        >
           {(() => {
             const id = (media.appId || '').toLowerCase()
-            if (id.includes('spotify')) return 'Spotify'
-            if (id.includes('chrome')) return 'Chrome'
-            if (id.includes('msedge') || id.includes('edge')) return 'Edge'
-            if (id.includes('firefox')) return 'Firefox'
-            if (id.includes('brave')) return 'Brave'
-            if (id.includes('vlc')) return 'VLC'
-            if (id.includes('applemusic') || id.includes('itunes')) return 'Apple Music'
+            if (id.includes('spotify')) return 'Spotify ↗'
+            if (id.includes('chrome')) return 'Chrome ↗'
+            if (id.includes('msedge') || id.includes('edge')) return 'Edge ↗'
+            if (id.includes('firefox')) return 'Firefox ↗'
+            if (id.includes('brave')) return 'Brave ↗'
+            if (id.includes('vlc')) return 'VLC ↗'
+            if (id.includes('applemusic') || id.includes('itunes')) return 'Apple Music ↗'
             return media.appId
-              ? media.appId.replace(/\.exe$/i, '').split(/[!_]/)[0]
-              : 'System Media'
+              ? `${media.appId.replace(/\.exe$/i, '').split(/[!_]/)[0]} ↗`
+              : 'Buka Spotify ↗'
           })()}
-        </span>
+        </button>
 
         <div className="flex items-center gap-2">
           <button
@@ -236,7 +247,11 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
               onPlayPause()
             }}
             className="w-7 h-7 bg-[#f5f6f8] text-[#0b0c0e] hover:bg-white transition-transform rounded-full shadow flex items-center justify-center active:scale-90"
-            title={media.isPlaying ? 'Pause' : 'Play'}
+            title={
+              media.isPlaying
+                ? 'Pause'
+                : 'Play (Otomatis membuka Spotify jika sedang tertutup)'
+            }
           >
             {media.isPlaying ? (
               <Pause className="w-3.5 h-3.5 fill-current" />
@@ -265,7 +280,7 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
                 : 'bg-white/5 text-[#6b7079]'
             }`}
           >
-            {media.isPlaying ? 'LIVE' : 'IDLE'}
+            {media.isPlaying ? 'LIVE' : 'READY'}
           </span>
         </div>
       </div>

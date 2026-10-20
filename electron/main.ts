@@ -53,12 +53,14 @@ let lastClipboardImageHash = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
 let mediaPollInterval: NodeJS.Timeout | null = null
 let batteryPollInterval: NodeJS.Timeout | null = null
+let appsPollInterval: NodeJS.Timeout | null = null
 let cursorPollInterval: NodeJS.Timeout | null = null
 
 let lastMediaSignature = ''
 let lastTrackKey = ''
 let cachedAlbumArt: string | null = null
 let lastBatterySignature = ''
+let lastAppsSignature = ''
 
 // Current active island bounding box in window-logical coordinates (starts in Stealth Edge hidden mode)
 let islandRect = {
@@ -88,6 +90,7 @@ function isPhysicalPath(p: string): boolean {
 
 function getPreloadPath(): string {
   const candidates = [
+    path.join(process.resourcesPath, 'app/electron/preload.cjs'),
     path.join(process.resourcesPath, 'app.asar.unpacked/electron/preload.cjs'),
     path.join(process.cwd(), 'electron/preload.cjs'),
     path.join(__dirname, '../electron/preload.cjs'),
@@ -102,6 +105,7 @@ function getPreloadPath(): string {
 function getScriptPath(scriptName: string): string {
   const candidates = [
     path.join(process.resourcesPath, 'scripts', scriptName),
+    path.join(process.resourcesPath, 'app/electron/scripts', scriptName),
     path.join(process.resourcesPath, 'app.asar.unpacked/electron/scripts', scriptName),
     path.join(process.cwd(), 'electron/scripts', scriptName),
     path.join(__dirname, '../electron/scripts', scriptName),
@@ -399,6 +403,7 @@ function createWindow() {
   startClipboardWatcher()
   startMediaWatcher()
   startBatteryWatcher()
+  startAppsWatcher()
 }
 
 /**
@@ -615,6 +620,30 @@ function startBatteryWatcher() {
   batteryPollInterval = setInterval(checkBattery, 4000)
 }
 
+function startAppsWatcher() {
+  let busy = false
+  const checkApps = async () => {
+    if (busy) return
+    busy = true
+    try {
+      const output = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
+      if (output && output !== lastAppsSignature) {
+        lastAppsSignature = output
+        const data = JSON.parse(output)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('apps-state-changed', data)
+        }
+      }
+    } catch {
+      // Ignore transient errors
+    } finally {
+      busy = false
+    }
+  }
+
+  appsPollInterval = setInterval(checkApps, 2500)
+}
+
 // IPC Handlers
 ipcMain.handle('get-current-media', async () => {
   const data = await fetchMediaState(true)
@@ -629,6 +658,51 @@ ipcMain.handle('get-current-battery', async () => {
     console.error('get-current-battery error:', err)
   }
   return { hasBattery: false }
+})
+
+ipcMain.handle('get-apps-status', async () => {
+  try {
+    const output = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
+    if (output) return JSON.parse(output)
+  } catch (err) {
+    console.error('get-apps-status error:', err)
+  }
+  return { apps: [], activeApp: '', activeTitle: '' }
+})
+
+ipcMain.handle('app-action', async (_event, payload: { target: string; command?: string }) => {
+  try {
+    const target = payload?.target || ''
+    const command = payload?.command || 'open'
+    const output = await runPowerShellScript('manage-apps.ps1', [
+      '-Mode',
+      'action',
+      '-Target',
+      target,
+      '-Command',
+      command,
+    ])
+    // Refresh app status & media state right after action
+    setTimeout(async () => {
+      try {
+        const appsOut = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
+        if (appsOut && mainWindow && !mainWindow.isDestroyed()) {
+          lastAppsSignature = appsOut
+          mainWindow.webContents.send('apps-state-changed', JSON.parse(appsOut))
+        }
+        if (target === 'spotify') {
+          const mediaData = await fetchMediaState(true)
+          if (mediaData && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('media-state-changed', mediaData)
+          }
+        }
+      } catch {}
+    }, 600)
+    return output ? JSON.parse(output) : { success: true }
+  } catch (err) {
+    console.error('app-action error:', err)
+    return { success: false }
+  }
 })
 
 ipcMain.handle('get-autostart', async () => {
@@ -747,6 +821,7 @@ app.on('window-all-closed', () => {
   if (clipboardPollInterval) clearInterval(clipboardPollInterval)
   if (mediaPollInterval) clearInterval(mediaPollInterval)
   if (batteryPollInterval) clearInterval(batteryPollInterval)
+  if (appsPollInterval) clearInterval(appsPollInterval)
   if (process.platform !== 'darwin') {
     app.quit()
   }

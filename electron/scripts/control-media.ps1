@@ -81,7 +81,63 @@ try {
         }
         '{"success": true}'
     } else {
-        '{"success": false, "reason": "No active media session"}'
+        $act = $Action.ToLower()
+        if ($act -eq "play" -or $act -eq "toggle") {
+            # Launch Spotify if closed and request playback
+            $spotifyCandidates = @(
+                "$env:LOCALAPPDATA\Microsoft\WindowsApps\Spotify.exe",
+                "$env:APPDATA\Spotify\Spotify.exe"
+            )
+            $launched = $false
+            foreach ($sp in $spotifyCandidates) {
+                if (Test-Path $sp) {
+                    Start-Process -FilePath $sp
+                    $launched = $true
+                    break
+                }
+            }
+            if (-not $launched) {
+                Start-Process "spotify:"
+            }
+
+            # Poll up to 6 seconds for Spotify SMTC session or MainWindowHandle to come alive
+            Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32Media {
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+}
+"@
+            for ($i = 0; $i -lt 20; $i++) {
+                Start-Sleep -Milliseconds 300
+                $allSessions = $manager.GetSessions()
+                if ($allSessions -and $allSessions.Count -gt 0) {
+                    foreach ($s in $allSessions) {
+                        if ($s.SourceAppUserModelId -match '(?i)spotify') {
+                            Await ($s.TryPlayAsync()) ([bool]) | Out-Null
+                            '{"success": true, "launched": true}'
+                            exit 0
+                        }
+                    }
+                }
+                $spProc = Get-Process -Name Spotify -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+                if ($spProc -and $i -ge 4) {
+                    # Send WM_APPCOMMAND (0x0319) with APPCOMMAND_MEDIA_PLAY_PAUSE (14 << 16 = 0xE0000) directly to Spotify window
+                    [Win32Media]::PostMessage($spProc.MainWindowHandle, 0x0319, [IntPtr]::Zero, [IntPtr]0xE0000) | Out-Null
+                    Start-Sleep -Milliseconds 400
+                    '{"success": true, "launched": true}'
+                    exit 0
+                }
+            }
+
+            # Fallback: send hardware media Play/Pause key
+            $wsh = New-Object -ComObject WScript.Shell
+            $wsh.SendKeys([char]179)
+            '{"success": true, "launched": true}'
+        } else {
+            '{"success": false, "reason": "No active media session"}'
+        }
     }
 } catch {
     '{"success": false, "error": "' + $_.Exception.Message + '"}'

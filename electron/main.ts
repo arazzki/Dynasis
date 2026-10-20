@@ -3,6 +3,10 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { execFile } from 'child_process'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock()
@@ -62,6 +66,7 @@ function createWindow() {
     y: y,
     frame: false,
     transparent: true,
+    backgroundColor: '#00000000',
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,

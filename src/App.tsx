@@ -261,6 +261,7 @@ export default function App() {
             onPlayPause={() => handleMediaAction(media.isPlaying ? 'pause' : 'play')}
             onNext={() => handleMediaAction('next')}
             onPrevious={() => handleMediaAction('previous')}
+            onCollapse={() => setMode('idle')}
           />
         )}
 

@@ -912,8 +912,8 @@ export default function App() {
 
               {/* VIEW 1: OVERVIEW */}
               {!isDragOver && view === 'overview' && (
-                <div className="flex gap-2.5 w-full h-full">
-                  <div className="w-[348px] flex-shrink-0 h-full">
+                <div className="flex gap-2 w-full h-full min-w-0 overflow-hidden">
+                  <div className="w-[326px] flex-shrink-0 h-full min-w-0">
                     <MediaIsland
                       media={media}
                       compact
@@ -927,27 +927,27 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="flex-1 h-full rounded-[18px] bg-[#141518] border border-white/[0.05] p-2 flex flex-col justify-between gap-1.5">
+                  <div className="flex-1 min-w-0 overflow-hidden h-full rounded-[18px] bg-[#141518] border border-white/[0.05] p-2 flex flex-col justify-between gap-1.5">
                     <button
                       onClick={() => setView('shelf')}
-                      className="group w-full flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#0e0f11] hover:bg-blue-500/15 border border-white/[0.06] hover:border-blue-400/40 transition-all text-left"
+                      className="group w-full min-w-0 overflow-hidden flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#0e0f11] hover:bg-blue-500/15 border border-white/[0.06] hover:border-blue-400/40 transition-all text-left"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                         <div className="w-6 h-6 rounded-lg bg-blue-500/15 flex items-center justify-center text-blue-400 flex-shrink-0">
                           <FolderPlus className="w-3.5 h-3.5" />
                         </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className="text-[11px] font-semibold text-[#f5f6f8] group-hover:text-blue-200 truncate">
+                        <div className="flex flex-col min-w-0 flex-1 overflow-hidden">
+                          <span className="text-[11px] font-semibold text-[#f5f6f8] group-hover:text-blue-200 truncate block">
                             Drop Shelf
                           </span>
-                          <span className="text-[9.5px] text-[#8e939c] truncate">
+                          <span className="text-[9.5px] text-[#8e939c] truncate block">
                             {shelfItems.length > 0
-                              ? `${shelfItems.length} file siap di-drag`
-                              : 'Win+Shift+S / Drop file'}
+                              ? `${shelfItems.length} item tersimpan`
+                              : 'Ctrl+C / Win+Shift+S'}
                           </span>
                         </div>
                       </div>
-                      <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-white/[0.06] text-[#9398a1]">
+                      <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-white/[0.06] text-[#9398a1] flex-shrink-0">
                         {shelfItems.length}
                       </span>
                     </button>
@@ -957,27 +957,27 @@ export default function App() {
                       const discordApp = syncedApps.find((a) => a.id === 'discord')
                       const isDiscordRunning = Boolean(discordApp?.isRunning)
                       return (
-                        <div className="w-full flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#0e0f11] border border-white/[0.06]">
+                        <div className="w-full min-w-0 overflow-hidden flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0e0f11] border border-white/[0.06]">
                           <button
                             onClick={() => handleAppAction('discord', 'open')}
-                            className="flex items-center gap-2.5 min-w-0 flex-1 text-left group"
+                            className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden text-left group"
                             title="Klik untuk membuka atau memfokuskan Discord"
                           >
                             <div className="w-6 h-6 rounded-lg bg-indigo-500/15 flex items-center justify-center text-indigo-400 flex-shrink-0">
                               <MessageSquare className="w-3.5 h-3.5" />
                             </div>
-                            <div className="flex flex-col min-w-0">
-                              <div className="flex items-center gap-1.5">
+                            <div className="flex flex-col min-w-0 flex-1 overflow-hidden">
+                              <div className="flex items-center gap-1.5 min-w-0">
                                 <span className="text-[11px] font-semibold text-[#f5f6f8] group-hover:text-indigo-300 truncate">
                                   Discord
                                 </span>
                                 <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
+                                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
                                     isDiscordRunning ? 'bg-emerald-400' : 'bg-white/25'
                                   }`}
                                 />
                               </div>
-                              <span className="text-[9.5px] text-[#8e939c] truncate">
+                              <span className="text-[9.5px] text-[#8e939c] truncate block">
                                 {isDiscordRunning
                                   ? discordApp?.windowTitle || 'Aktif · Klik fokus'
                                   : 'Tertutup · Klik buka'}
@@ -995,14 +995,14 @@ export default function App() {
                       )
                     })()}
 
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 w-full min-w-0">
                       <button
                         onClick={simulateScreenshot}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.05] text-[10.5px] font-medium text-[#f5f6f8] transition-colors active:scale-95"
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.05] text-[10px] font-medium text-[#f5f6f8] transition-colors active:scale-95 truncate"
                         title="Simulasikan tangkapan layar ke Shelf"
                       >
-                        <Camera className="w-3 h-3 text-blue-400" />
-                        <span>Test Shelf</span>
+                        <Camera className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                        <span className="truncate">Test Shelf</span>
                       </button>
 
                       <button
@@ -1010,11 +1010,11 @@ export default function App() {
                           setIsPinned(false)
                           enterStealthEdge(900)
                         }}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-[10.5px] font-medium text-amber-300 transition-colors active:scale-95"
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-[10px] font-medium text-amber-300 transition-colors active:scale-95 truncate"
                         title="Sembunyikan ke tepi atas layar (5px)"
                       >
-                        <EyeOff className="w-3 h-3" />
-                        <span>Stealth</span>
+                        <EyeOff className="w-3 h-3 flex-shrink-0" />
+                        <span className="truncate">Stealth</span>
                       </button>
                     </div>
                   </div>
@@ -1023,8 +1023,8 @@ export default function App() {
 
               {/* VIEW 1B: APPS & SYSTEM CONTROL HUB (Spotify, Discord, Browser, VS Code + Audio) */}
               {!isDragOver && view === 'apps' && (
-                <div className="w-full h-full rounded-[18px] bg-[#141518] border border-white/[0.05] px-3 py-2 flex flex-col justify-between">
-                  <div className="grid grid-cols-2 gap-2">
+                <div className="w-full h-full rounded-[18px] bg-[#141518] border border-white/[0.05] px-3 py-2 flex flex-col justify-between overflow-hidden">
+                  <div className="grid grid-cols-2 gap-2 min-w-0">
                     {syncedApps.map((appItem) => {
                       const isSpotify = appItem.id === 'spotify'
                       const isDiscord = appItem.id === 'discord'
@@ -1032,11 +1032,11 @@ export default function App() {
                       return (
                         <div
                           key={appItem.id}
-                          className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                          className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors min-w-0 overflow-hidden"
                         >
                           <button
                             onClick={() => handleAppAction(appItem.id, 'open')}
-                            className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                            className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden text-left"
                             title={`Klik untuk membuka atau memfokuskan ${appItem.name}`}
                           >
                             <div
@@ -1060,8 +1060,8 @@ export default function App() {
                                 <Code2 className="w-3.5 h-3.5" />
                               )}
                             </div>
-                            <div className="flex flex-col min-w-0 pr-1">
-                              <div className="flex items-center gap-1.5">
+                            <div className="flex flex-col min-w-0 flex-1 overflow-hidden pr-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
                                 <span className="text-[11px] font-semibold text-[#f5f6f8] truncate">
                                   {appItem.name}
                                 </span>
@@ -1071,7 +1071,7 @@ export default function App() {
                                   }`}
                                 />
                               </div>
-                              <span className="text-[9.5px] text-[#8e939c] truncate">
+                              <span className="text-[9.5px] text-[#8e939c] truncate block">
                                 {appItem.isRunning
                                   ? appItem.windowTitle || 'Berjalan di sistem'
                                   : 'Tertutup · Klik buka'}

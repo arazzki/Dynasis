@@ -186,7 +186,7 @@ export default function App() {
       ) {
         enterStealthEdge()
       }
-    }, 6500)
+    }, 3250)
   }
 
   const updatePrefs = (patch: Partial<DynasisPreferences>) => {

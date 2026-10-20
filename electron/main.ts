@@ -29,7 +29,17 @@ if (!fs.existsSync(tempDir)) {
 }
 
 function getScriptPath(scriptName: string): string {
-  return path.join(app.getAppPath(), 'electron/scripts', scriptName)
+  const candidates = [
+    path.join(__dirname, '../electron/scripts', scriptName),
+    path.join(__dirname, 'scripts', scriptName),
+    path.join(process.cwd(), 'electron/scripts', scriptName),
+    path.join(app.getAppPath(), 'electron/scripts', scriptName),
+    path.join(process.resourcesPath, 'scripts', scriptName),
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
+  return candidates[0]
 }
 
 function runPowerShellScript(scriptName: string, args: string[] = []): Promise<string> {
@@ -54,14 +64,15 @@ function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay()
   const { width: screenWidth } = primaryDisplay.workAreaSize
 
-  const windowWidth = 720
-  const windowHeight = 360
-  const x = Math.round((screenWidth - windowWidth) / 2)
+  // Start with compact island dimensions
+  const initialWidth = 240
+  const initialHeight = 58
+  const x = Math.round((screenWidth - initialWidth) / 2)
   const y = 0
 
   mainWindow = new BrowserWindow({
-    width: windowWidth,
-    height: windowHeight,
+    width: initialWidth,
+    height: initialHeight,
     x: x,
     y: y,
     frame: false,
@@ -80,8 +91,7 @@ function createWindow() {
     },
   })
 
-  // Start with click-through enabled on transparent areas
-  mainWindow.setIgnoreMouseEvents(true, { forward: true })
+  // Keep on top of other windows
   mainWindow.setAlwaysOnTop(true, 'screen-saver')
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -90,11 +100,19 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  // Handle IPC for click-through toggling
-  ipcMain.on('set-ignore-mouse-events', (event, ignore: boolean, options: { forward?: boolean } = {}) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win && !win.isDestroyed()) {
-      win.setIgnoreMouseEvents(ignore, { forward: options.forward ?? true })
+  // When webContents is ready, send initial system state
+  mainWindow.webContents.on('did-finish-load', async () => {
+    try {
+      const mediaOut = await runPowerShellScript('get-media.ps1')
+      if (mediaOut && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('media-state-changed', JSON.parse(mediaOut))
+      }
+      const batteryOut = await runPowerShellScript('get-battery.ps1')
+      if (batteryOut && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('battery-state-changed', JSON.parse(batteryOut))
+      }
+    } catch (err) {
+      console.error('Initial state dispatch error:', err)
     }
   })
 
@@ -103,6 +121,25 @@ function createWindow() {
   startMediaWatcher()
   startBatteryWatcher()
 }
+
+// Dynamic window resizing from renderer
+ipcMain.on('set-island-size', (_event, { width, height }: { width: number; height: number }) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width: screenWidth } = primaryDisplay.workAreaSize
+  const targetW = Math.round(width)
+  const targetH = Math.round(height)
+  const x = Math.round((screenWidth - targetW) / 2)
+  mainWindow.setBounds({ x, y: 0, width: targetW, height: targetH })
+})
+
+// Optional click-through if explicit (default is false)
+ipcMain.on('set-ignore-mouse-events', (event, ignore: boolean, options: { forward?: boolean } = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && !win.isDestroyed()) {
+    win.setIgnoreMouseEvents(ignore, { forward: options.forward ?? false })
+  }
+})
 
 function startClipboardWatcher() {
   clipboardPollInterval = setInterval(() => {
@@ -153,12 +190,10 @@ function startMediaWatcher() {
         }
       }
     } catch {
-      // Ignore background transient errors
+      // Ignore transient errors
     }
   }
 
-  // Initial check
-  checkMedia()
   mediaPollInterval = setInterval(checkMedia, 1500)
 }
 
@@ -174,15 +209,34 @@ function startBatteryWatcher() {
         }
       }
     } catch {
-      // Ignore background transient errors
+      // Ignore transient errors
     }
   }
 
-  checkBattery()
   batteryPollInterval = setInterval(checkBattery, 4000)
 }
 
 // IPC Handlers
+ipcMain.handle('get-current-media', async () => {
+  try {
+    const output = await runPowerShellScript('get-media.ps1')
+    if (output) return JSON.parse(output)
+  } catch (err) {
+    console.error('get-current-media error:', err)
+  }
+  return { hasMedia: false }
+})
+
+ipcMain.handle('get-current-battery', async () => {
+  try {
+    const output = await runPowerShellScript('get-battery.ps1')
+    if (output) return JSON.parse(output)
+  } catch (err) {
+    console.error('get-current-battery error:', err)
+  }
+  return { hasBattery: false }
+})
+
 ipcMain.on('start-file-drag', (event, filePath: string) => {
   if (fs.existsSync(filePath)) {
     event.sender.startDrag({
@@ -195,11 +249,13 @@ ipcMain.on('start-file-drag', (event, filePath: string) => {
 ipcMain.on('media-action', async (_event, action: string) => {
   try {
     await runPowerShellScript('control-media.ps1', [action])
-    // Trigger immediate media re-check
-    const output = await runPowerShellScript('get-media.ps1')
-    if (output && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('media-state-changed', JSON.parse(output))
-    }
+    // Re-check media status immediately after action
+    setTimeout(async () => {
+      const output = await runPowerShellScript('get-media.ps1')
+      if (output && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('media-state-changed', JSON.parse(output))
+      }
+    }, 200)
   } catch (err) {
     console.error('Media action error:', err)
   }

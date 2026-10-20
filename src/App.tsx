@@ -6,6 +6,14 @@ import { MediaIsland, MediaState } from './components/MediaIsland'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
 import { BatteryHUD, BatteryState } from './components/BatteryHUD'
 
+const windowBounds: Record<IslandMode, { width: number; height: number }> = {
+  idle: { width: 220, height: 58 },
+  battery: { width: 260, height: 62 },
+  media: { width: 430, height: 98 },
+  shelf: { width: 470, height: 104 },
+  menu: { width: 370, height: 124 },
+}
+
 export default function App() {
   const [mode, setMode] = useState<IslandMode>('idle')
   const [isHovered, setIsHovered] = useState(false)
@@ -20,6 +28,43 @@ export default function App() {
     duration: 0,
     position: 0,
   })
+
+  // Synchronize window size with Island mode
+  useEffect(() => {
+    const activeMode = isDragOver ? 'shelf' : mode
+    const bounds = windowBounds[activeMode]
+    const extraWidth = isHovered && mode === 'idle' ? 35 : 0
+    window.dynasis?.setIslandSize(bounds.width + extraWidth, bounds.height)
+  }, [mode, isHovered, isDragOver])
+
+  // Fetch initial media and battery on mount
+  useEffect(() => {
+    if (window.dynasis?.getCurrentMedia) {
+      window.dynasis.getCurrentMedia().then((data) => {
+        if (data && data.hasMedia) {
+          setMedia({
+            title: data.title || 'Unknown Title',
+            artist: data.artist || 'Unknown Artist',
+            albumArt: undefined,
+            isPlaying: data.status === 'Playing',
+            duration: 0,
+            position: 0,
+          })
+        }
+      })
+    }
+
+    if (window.dynasis?.getCurrentBattery) {
+      window.dynasis.getCurrentBattery().then((data) => {
+        if (data && data.hasBattery) {
+          setBattery({
+            level: data.level,
+            isCharging: data.isCharging,
+          })
+        }
+      })
+    }
+  }, [])
 
   // 1. Listen to native screenshot capture from Electron
   useEffect(() => {
@@ -46,6 +91,8 @@ export default function App() {
             duration: 0,
             position: 0,
           })
+        } else {
+          setMedia((m) => ({ ...m, isPlaying: false }))
         }
       })
       return cleanup
@@ -72,21 +119,11 @@ export default function App() {
     }
   }, [])
 
-  const handleMouseEnter = () => {
-    setIsHovered(true)
-    window.dynasis?.setIgnoreMouseEvents(false)
-  }
-
-  const handleMouseLeave = () => {
-    setIsHovered(false)
-    window.dynasis?.setIgnoreMouseEvents(true, { forward: true })
-  }
-
   const handleIslandClick = () => {
     if (mode === 'idle') {
       if (shelfItems.length > 0) {
         setMode('shelf')
-      } else if (media.isPlaying) {
+      } else if (media.isPlaying || media.title !== 'No media playing') {
         setMode('media')
       } else {
         setMode('menu')
@@ -99,7 +136,6 @@ export default function App() {
     e.preventDefault()
     e.stopPropagation()
     setIsDragOver(true)
-    window.dynasis?.setIgnoreMouseEvents(false)
   }
 
   const handleDragLeave = (e: React.DragEvent) => {
@@ -184,13 +220,13 @@ export default function App() {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="w-screen h-screen flex flex-col items-center justify-start overflow-hidden pointer-events-auto"
+      className="w-full h-full flex flex-col items-center justify-start overflow-hidden bg-transparent select-none"
     >
       <Island
         mode={isDragOver ? 'shelf' : mode}
         isHovered={isHovered || isDragOver}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
         onClick={handleIslandClick}
       >
         {/* Drag-in Feedback */}
@@ -214,23 +250,23 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="flex items-center justify-between w-full px-3 text-neutral-400 text-xs font-medium"
           >
-            {/* Left mini status */}
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-[11px] font-semibold text-white tracking-wider">
-                DYNASIS
+            {/* Left: Indicator or Track preview */}
+            <div className="flex items-center gap-1.5 overflow-hidden max-w-[110px]">
+              <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'}`} />
+              <span className="text-[11px] font-semibold text-white truncate tracking-tight">
+                {media.isPlaying ? media.title : 'DYNASIS'}
               </span>
             </div>
 
-            {/* Right mini indicators */}
-            <div className="flex items-center gap-2">
+            {/* Right: Waveform and shelf count */}
+            <div className="flex items-center gap-2 flex-shrink-0">
               {media.isPlaying && (
                 <div className="flex items-end gap-[1.5px] h-3">
                   {[0, 1, 2].map((i) => (
                     <motion.span
                       key={i}
-                      className="w-[2.5px] bg-white rounded-full"
-                      animate={{ height: ['3px', '11px', '4px'] }}
+                      className="w-[2.5px] bg-emerald-400 rounded-full"
+                      animate={{ height: ['3px', '12px', '4px'] }}
                       transition={{
                         repeat: Infinity,
                         duration: 0.6,

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 export interface DynasisAPI {
+  setIslandSize: (width: number, height: number) => void
   setIgnoreMouseEvents: (ignore: boolean, options?: { forward?: boolean }) => void
   onScreenshotCaptured: (callback: (data: { id: string; filePath?: string; dataUrl: string; timestamp: number; size?: { width: number; height: number } }) => void) => () => void
   onMediaStateChanged: (callback: (media: any) => void) => () => void
@@ -10,11 +11,16 @@ export interface DynasisAPI {
   copyImageToClipboard: (dataUrl: string) => Promise<boolean>
   dismissScreenshot: (id: string) => void
   mediaAction: (action: 'play' | 'pause' | 'next' | 'previous') => void
+  getCurrentMedia: () => Promise<any>
+  getCurrentBattery: () => Promise<any>
   minimizeApp: () => void
   closeApp: () => void
 }
 
 const api: DynasisAPI = {
+  setIslandSize: (width, height) => {
+    ipcRenderer.send('set-island-size', { width, height })
+  },
   setIgnoreMouseEvents: (ignore, options = { forward: true }) => {
     ipcRenderer.send('set-ignore-mouse-events', ignore, options)
   },
@@ -38,6 +44,12 @@ const api: DynasisAPI = {
     return () => {
       ipcRenderer.removeListener('battery-state-changed', handler)
     }
+  },
+  getCurrentMedia: () => {
+    return ipcRenderer.invoke('get-current-media')
+  },
+  getCurrentBattery: () => {
+    return ipcRenderer.invoke('get-current-battery')
   },
   startFileDrag: (filePath: string) => {
     ipcRenderer.send('start-file-drag', filePath)

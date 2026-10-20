@@ -169,7 +169,7 @@ async function fetchMediaState(forceFreshArt = false): Promise<any | null> {
  * Generates a crisp 32x32 RGBA PNG icon in-memory for the Windows System Tray
  * (Black rounded pill with an emerald glowing core).
  */
-function createTrayIcon(): Electron.NativeImage {
+function createTrayPngBuffer(): Buffer {
   const w = 32
   const h = 32
   const raw = Buffer.alloc((w * 4 + 1) * h)
@@ -237,21 +237,56 @@ function createTrayIcon(): Electron.NativeImage {
   ihdr[12] = 0
 
   const idat = zlib.deflateSync(raw)
-  const png = Buffer.concat([
+  return Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk('IHDR', ihdr),
     chunk('IDAT', idat),
     chunk('IEND', Buffer.alloc(0)),
   ])
+}
 
-  return nativeImage.createFromBuffer(png)
+function createTrayIcon(): Electron.NativeImage {
+  return nativeImage.createFromBuffer(createTrayPngBuffer())
+}
+
+function ensureDynasisIcoFile(): string {
+  const icoPath = path.join(tempDir, 'dynasis.ico')
+  try {
+    if (!fs.existsSync(icoPath)) {
+      const png = createTrayPngBuffer()
+      const header = Buffer.alloc(22)
+      header.writeUInt16LE(0, 0) // Reserved
+      header.writeUInt16LE(1, 2) // Type: 1 = ICO
+      header.writeUInt16LE(1, 4) // Image count: 1
+      header[6] = 32 // Width
+      header[7] = 32 // Height
+      header[8] = 0 // Color palette
+      header[9] = 0 // Reserved
+      header.writeUInt16LE(1, 10) // Color planes
+      header.writeUInt16LE(32, 12) // Bits per pixel
+      header.writeUInt32LE(png.length, 14) // Image byte size
+      header.writeUInt32LE(22, 18) // Offset (6 + 16)
+      fs.writeFileSync(icoPath, Buffer.concat([header, png]))
+    }
+  } catch {}
+  return icoPath
 }
 
 const RUN_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const STARTUP_APPROVED_REG_KEY =
   'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run'
-const AUTOSTART_VALUE_NAME = 'Dynasis'
-const LEGACY_AUTOSTART_NAMES = ['electron.app.Dynasis', 'electron.app.Electron']
+const STARTUP_APPROVED_FOLDER_KEY =
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder'
+const MUI_CACHE_REG_KEY =
+  'HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache'
+const LEGACY_AUTOSTART_NAMES = ['Dynasis', 'electron.app.Dynasis', 'electron.app.Electron']
+
+function getStartupShortcutPath(): string {
+  return path.join(
+    app.getPath('appData'),
+    'Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Dynasis.lnk'
+  )
+}
 
 function regValueExists(keyPath: string, valueName: string): boolean {
   try {
@@ -276,12 +311,49 @@ function regDeleteValue(keyPath: string, valueName: string): void {
   }
 }
 
+function registerFriendlyAppNameInWindowsShell(): void {
+  if (process.platform !== 'win32') return
+  try {
+    execFileSync(
+      'reg.exe',
+      [
+        'add',
+        MUI_CACHE_REG_KEY,
+        '/v',
+        `${process.execPath}.FriendlyAppName`,
+        '/t',
+        'REG_SZ',
+        '/d',
+        'Dynasis',
+        '/f',
+      ],
+      { windowsHide: true, stdio: 'ignore' }
+    )
+    execFileSync(
+      'reg.exe',
+      [
+        'add',
+        MUI_CACHE_REG_KEY,
+        '/v',
+        `${process.execPath}.ApplicationCompany`,
+        '/t',
+        'REG_SZ',
+        '/d',
+        'Dynasis',
+        '/f',
+      ],
+      { windowsHide: true, stdio: 'ignore' }
+    )
+  } catch {}
+}
+
 function getAutoStartEnabled(): boolean {
   if (process.platform !== 'win32') {
     return app.getLoginItemSettings().openAtLogin
   }
+  const lnkPath = getStartupShortcutPath()
   return (
-    regValueExists(RUN_REG_KEY, AUTOSTART_VALUE_NAME) ||
+    fs.existsSync(lnkPath) ||
     LEGACY_AUTOSTART_NAMES.some((name) => regValueExists(RUN_REG_KEY, name))
   )
 }
@@ -292,38 +364,47 @@ function setAutoStartEnabled(enabled: boolean): boolean {
     return app.getLoginItemSettings().openAtLogin
   }
 
-  // Always clean up legacy duplicate Electron entries
+  // Always remove Registry Run entries so Windows Task Manager doesn't read raw PE "Electron"
   for (const legacyName of LEGACY_AUTOSTART_NAMES) {
     regDeleteValue(RUN_REG_KEY, legacyName)
     regDeleteValue(STARTUP_APPROVED_REG_KEY, legacyName)
   }
 
+  const lnkPath = getStartupShortcutPath()
+
   if (enabled) {
-    const quotedExePath = `"${process.execPath}"`
     try {
-      execFileSync(
-        'reg.exe',
-        ['add', RUN_REG_KEY, '/v', AUTOSTART_VALUE_NAME, '/t', 'REG_SZ', '/d', quotedExePath, '/f'],
-        { windowsHide: true, stdio: 'ignore' }
-      )
-      // Remove any disabled state in StartupApproved\Run so Windows Task Manager marks it Enabled
-      regDeleteValue(STARTUP_APPROVED_REG_KEY, AUTOSTART_VALUE_NAME)
+      const icoPath = ensureDynasisIcoFile()
+      shell.writeShortcutLink(lnkPath, 'create', {
+        target: process.execPath,
+        cwd: path.dirname(process.execPath),
+        description: 'Dynasis — Dynamic System Island',
+        icon: icoPath,
+        iconIndex: 0,
+        appUserModelId: 'Dynasis',
+      })
+      regDeleteValue(STARTUP_APPROVED_FOLDER_KEY, 'Dynasis.lnk')
     } catch (err) {
-      console.error('Failed to set Windows Run registry key:', err)
+      console.error('Failed to create Dynasis.lnk startup shortcut:', err)
     }
   } else {
-    regDeleteValue(RUN_REG_KEY, AUTOSTART_VALUE_NAME)
-    regDeleteValue(STARTUP_APPROVED_REG_KEY, AUTOSTART_VALUE_NAME)
+    try {
+      if (fs.existsSync(lnkPath)) {
+        fs.unlinkSync(lnkPath)
+      }
+      regDeleteValue(STARTUP_APPROVED_FOLDER_KEY, 'Dynasis.lnk')
+    } catch {}
   }
 
-  return getAutoStartEnabled()
+  return fs.existsSync(lnkPath)
 }
 
 function migrateAutoStartRegistry(): void {
   if (process.platform !== 'win32') return
+  registerFriendlyAppNameInWindowsShell()
   const hasAny = getAutoStartEnabled()
   if (hasAny) {
-    // Consolidate any legacy electron.app.* entries into a single clean quoted "Dynasis" entry
+    // Migrate any Registry Run entry into the clean Startup folder Dynasis.lnk shortcut
     setAutoStartEnabled(true)
   }
 }
@@ -429,7 +510,10 @@ function createWindow() {
   const x = Math.round((screenWidth - PANEL_W) / 2)
   const y = 0
 
+  app.setName('Dynasis')
   mainWindow = new BrowserWindow({
+    title: 'Dynasis',
+    icon: createTrayIcon(),
     width: PANEL_W,
     height: PANEL_H,
     x: x,

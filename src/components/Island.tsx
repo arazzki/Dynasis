@@ -35,7 +35,7 @@ export function getIslandDimensions(
       }
     case 'compact':
       return {
-        width: isHovered ? 312 : 288,
+        width: isHovered ? 360 : 336,
         height: isHovered ? 36 : 34,
         y: isPill ? 6 : 0,
         borderRadius: isPill ? '20px' : '0px 0px 16px 16px',

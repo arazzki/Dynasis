@@ -138,11 +138,20 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
             />
             <span className="text-[12.5px] font-semibold truncate text-[#f5f6f8] tracking-tight">
               {media.title || 'No media playing'}
+              {media.artist &&
+                media.artist !== 'Unknown Artist' &&
+                !media.artist.startsWith('Klik Play') && (
+                  <span className="font-normal text-[#a5aab4]">
+                    {' '}
+                    - {media.artist}
+                  </span>
+                )}
             </span>
           </div>
           <span className="text-[11px] text-[#9398a1] truncate mt-0.5">
-            {media.artist || 'Klik Play untuk otomatis membuka & memutar Spotify'}
-            {media.albumTitle ? ` · ${media.albumTitle}` : ''}
+            {media.albumTitle
+              ? `${media.artist} · ${media.albumTitle}`
+              : media.artist || 'Klik Play untuk otomatis membuka & memutar Spotify'}
           </span>
         </div>
 

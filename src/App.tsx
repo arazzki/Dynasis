@@ -649,8 +649,8 @@ export default function App() {
             className="w-full h-full flex items-center justify-between px-3 cursor-pointer group"
             title="Klik untuk membuka Dynasis · Klik kanan untuk Pengaturan"
           >
-            {/* Left: Album Art / Dot + Title */}
-            <div className="flex items-center gap-2 min-w-0 max-w-[150px]">
+            {/* Left: Album Art / Dot + Title - Artist/Band */}
+            <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
               {media.albumArt ? (
                 <img
                   src={media.albumArt}
@@ -668,7 +668,21 @@ export default function App() {
                 />
               )}
               <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate tracking-tight">
-                {hasActiveMedia ? media.title : 'Dynasis'}
+                {hasActiveMedia ? (
+                  <>
+                    {media.title}
+                    {media.artist &&
+                      media.artist !== 'Unknown Artist' &&
+                      !media.artist.startsWith('Klik Play') && (
+                        <span className="font-normal text-[#a5aab4]">
+                          {' '}
+                          - {media.artist}
+                        </span>
+                      )}
+                  </>
+                ) : (
+                  'Dynasis'
+                )}
               </span>
             </div>
 

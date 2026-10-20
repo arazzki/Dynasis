@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 export interface DynasisAPI {
   setIslandSize: (width: number, height: number) => void
+  moveWindowBy: (deltaX: number, deltaY: number) => void
+  resetWindowPosition: () => void
   setIgnoreMouseEvents: (ignore: boolean, options?: { forward?: boolean }) => void
   onScreenshotCaptured: (callback: (data: { id: string; filePath?: string; dataUrl: string; timestamp: number; size?: { width: number; height: number } }) => void) => () => void
   onMediaStateChanged: (callback: (media: any) => void) => () => void
@@ -20,6 +22,12 @@ export interface DynasisAPI {
 const api: DynasisAPI = {
   setIslandSize: (width, height) => {
     ipcRenderer.send('set-island-size', { width, height })
+  },
+  moveWindowBy: (deltaX, deltaY) => {
+    ipcRenderer.send('move-window-by', { deltaX, deltaY })
+  },
+  resetWindowPosition: () => {
+    ipcRenderer.send('reset-window-position')
   },
   setIgnoreMouseEvents: (ignore, options = { forward: true }) => {
     ipcRenderer.send('set-ignore-mouse-events', ignore, options)

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, clipboard, nativeImage, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, screen, clipboard, nativeImage, dialog, globalShortcut } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -122,6 +122,9 @@ function createWindow() {
   startBatteryWatcher()
 }
 
+let userCustomX: number | null = null
+let userCustomY: number | null = null
+
 // Dynamic window resizing from renderer
 ipcMain.on('set-island-size', (_event, { width, height }: { width: number; height: number }) => {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -129,8 +132,38 @@ ipcMain.on('set-island-size', (_event, { width, height }: { width: number; heigh
   const { width: screenWidth } = primaryDisplay.workAreaSize
   const targetW = Math.round(width)
   const targetH = Math.round(height)
-  const x = Math.round((screenWidth - targetW) / 2)
-  mainWindow.setBounds({ x, y: 0, width: targetW, height: targetH })
+
+  let x = Math.round((screenWidth - targetW) / 2)
+  let y = 0
+
+  if (userCustomX !== null && userCustomY !== null) {
+    const [currentX] = mainWindow.getPosition()
+    const [currentW] = mainWindow.getSize()
+    const centerX = currentX + currentW / 2
+    x = Math.round(centerX - targetW / 2)
+    y = userCustomY
+  }
+
+  mainWindow.setBounds({ x, y, width: targetW, height: targetH })
+})
+
+ipcMain.on('move-window-by', (_event, { deltaX, deltaY }: { deltaX: number; deltaY: number }) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const [currentX, currentY] = mainWindow.getPosition()
+  userCustomX = currentX + Math.round(deltaX)
+  userCustomY = Math.max(0, currentY + Math.round(deltaY))
+  mainWindow.setPosition(userCustomX, userCustomY)
+})
+
+ipcMain.on('reset-window-position', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  userCustomX = null
+  userCustomY = null
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width: screenWidth } = primaryDisplay.workAreaSize
+  const [w, h] = mainWindow.getSize()
+  const x = Math.round((screenWidth - w) / 2)
+  mainWindow.setBounds({ x, y: 0, width: w, height: h })
 })
 
 // Optional click-through if explicit (default is false)
@@ -303,11 +336,25 @@ ipcMain.on('app-close', () => {
 app.whenReady().then(() => {
   createWindow()
 
+  // Global hotkey: Alt + \ toggles show / hide Dynasis
+  globalShortcut.register('Alt+\\', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isVisible()) {
+      mainWindow.hide()
+    } else {
+      mainWindow.show()
+    }
+  })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
     }
   })
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
 })
 
 app.on('window-all-closed', () => {

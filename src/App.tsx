@@ -1,23 +1,24 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Music, Camera, Zap, X, Power, FolderPlus } from 'lucide-react'
+import { Music, Camera, Zap, X, Power, FolderPlus, EyeOff, Eye, Move, RotateCcw } from 'lucide-react'
 import { Island, IslandMode } from './components/Island'
 import { MediaIsland, MediaState } from './components/MediaIsland'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
 import { BatteryHUD, BatteryState } from './components/BatteryHUD'
 
 const windowBounds: Record<IslandMode, { width: number; height: number }> = {
-  idle: { width: 220, height: 58 },
-  battery: { width: 260, height: 62 },
-  media: { width: 430, height: 98 },
-  shelf: { width: 470, height: 104 },
-  menu: { width: 370, height: 124 },
+  idle: { width: 250, height: 56 },
+  battery: { width: 280, height: 68 },
+  media: { width: 460, height: 110 },
+  shelf: { width: 500, height: 120 },
+  menu: { width: 400, height: 164 },
 }
 
 export default function App() {
   const [mode, setMode] = useState<IslandMode>('idle')
   const [isHovered, setIsHovered] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [autoHide, setAutoHide] = useState(true)
   const [shelfItems, setShelfItems] = useState<ScreenshotItem[]>([])
   const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
   const [media, setMedia] = useState<MediaState>({
@@ -29,13 +30,21 @@ export default function App() {
     position: 0,
   })
 
-  // Synchronize window size with Island mode
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
+
+  // Synchronize window size with Island mode and auto-hide status
   useEffect(() => {
     const activeMode = isDragOver ? 'shelf' : mode
     const bounds = windowBounds[activeMode]
     const extraWidth = isHovered && mode === 'idle' ? 35 : 0
-    window.dynasis?.setIslandSize(bounds.width + extraWidth, bounds.height)
-  }, [mode, isHovered, isDragOver])
+
+    // When auto-hidden and not hovered, window height is tiny (20px) to never block browser tabs
+    const targetHeight = autoHide && !isHovered && mode === 'idle' && !isDragOver
+      ? 22
+      : bounds.height
+
+    window.dynasis?.setIslandSize(bounds.width + extraWidth, targetHeight)
+  }, [mode, isHovered, isDragOver, autoHide])
 
   // Fetch initial media and battery on mount
   useEffect(() => {
@@ -131,6 +140,29 @@ export default function App() {
     }
   }
 
+  // Drag Island Window to Reposition
+  const handleWindowDragStart = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    dragStartRef.current = { x: e.screenX, y: e.screenY }
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!dragStartRef.current) return
+      const deltaX = moveEvent.screenX - dragStartRef.current.x
+      const deltaY = moveEvent.screenY - dragStartRef.current.y
+      dragStartRef.current = { x: moveEvent.screenX, y: moveEvent.screenY }
+      window.dynasis?.moveWindowBy(deltaX, deltaY)
+    }
+
+    const onMouseUp = () => {
+      dragStartRef.current = null
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
+
   // Handle external file dropped onto Dynasis
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -210,7 +242,6 @@ export default function App() {
     if (window.dynasis?.mediaAction) {
       window.dynasis.mediaAction(action)
     }
-    // Optimistic update
     if (action === 'play') setMedia((m) => ({ ...m, isPlaying: true }))
     if (action === 'pause') setMedia((m) => ({ ...m, isPlaying: false }))
   }
@@ -225,6 +256,7 @@ export default function App() {
       <Island
         mode={isDragOver ? 'shelf' : mode}
         isHovered={isHovered || isDragOver}
+        isAutoHide={autoHide}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         onClick={handleIslandClick}
@@ -251,8 +283,8 @@ export default function App() {
             className="flex items-center justify-between w-full px-3 text-neutral-400 text-xs font-medium"
           >
             {/* Left: Indicator or Track preview */}
-            <div className="flex items-center gap-1.5 overflow-hidden max-w-[110px]">
-              <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'}`} />
+            <div className="flex items-center gap-1.5 overflow-hidden max-w-[125px]">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'}`} />
               <span className="text-[11px] font-semibold text-white truncate tracking-tight">
                 {media.isPlaying ? media.title : 'DYNASIS'}
               </span>
@@ -324,32 +356,73 @@ export default function App() {
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
-            className="flex flex-col w-full h-full p-2.5 text-white"
+            className="flex flex-col w-full h-full p-3 text-white justify-between"
           >
-            <div className="flex items-center justify-between pb-1.5 border-b border-white/10 px-1">
-              <span className="text-[11px] font-semibold text-neutral-300">Dynasis Quick Controls</span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setMode('idle')
-                }}
-                className="p-1 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white"
+            {/* Header with Title + Drag Handle + Close */}
+            <div className="flex items-center justify-between pb-2 border-b border-white/10 px-1">
+              <div
+                onMouseDown={handleWindowDragStart}
+                className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing text-neutral-300 hover:text-white"
+                title="Hold & drag to move Dynasis anywhere"
               >
-                <X className="w-3.5 h-3.5" />
-              </button>
+                <Move className="w-3.5 h-3.5 text-neutral-400" />
+                <span className="text-[11px] font-semibold tracking-wide">Dynasis Controls</span>
+              </div>
+
+              <div className="flex items-center gap-1">
+                {/* Auto-Hide Toggle */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setAutoHide(!autoHide)
+                  }}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors border ${
+                    autoHide ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-white/10 text-neutral-400 border-white/10'
+                  }`}
+                  title={autoHide ? 'Auto-Hide Active (Slides up when idle)' : 'Auto-Hide Disabled (Always visible)'}
+                >
+                  {autoHide ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  <span>{autoHide ? 'Auto-Hide' : 'Pinned'}</span>
+                </button>
+
+                {/* Reset Position */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    window.dynasis?.resetWindowPosition()
+                  }}
+                  className="p-1 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white"
+                  title="Reset Position to Top Center"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+
+                {/* Close Menu */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setMode('idle')
+                  }}
+                  className="p-1 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white ml-0.5"
+                  title="Close Menu"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex items-center justify-around pt-2">
+            {/* Quick Action Buttons Grid */}
+            <div className="grid grid-cols-4 gap-2 pt-2 pb-0.5">
               <button
                 onClick={(e) => {
                   e.stopPropagation()
                   simulateScreenshot()
                 }}
-                className="flex flex-col items-center gap-1 p-1.5 rounded-xl hover:bg-white/10 active:scale-95 transition-all"
+                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition-all border border-white/5"
                 title="Test Screenshot"
               >
                 <Camera className="w-4 h-4 text-blue-400" />
-                <span className="text-[10px] text-neutral-300">Screenshot</span>
+                <span className="text-[10px] text-neutral-300 font-medium">Screenshot</span>
               </button>
 
               <button
@@ -357,11 +430,11 @@ export default function App() {
                   e.stopPropagation()
                   setMode('media')
                 }}
-                className="flex flex-col items-center gap-1 p-1.5 rounded-xl hover:bg-white/10 active:scale-95 transition-all"
+                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition-all border border-white/5"
                 title="Media Player"
               >
                 <Music className="w-4 h-4 text-emerald-400" />
-                <span className="text-[10px] text-neutral-300">Media</span>
+                <span className="text-[10px] text-neutral-300 font-medium">Media</span>
               </button>
 
               <button
@@ -370,11 +443,11 @@ export default function App() {
                   setMode('battery')
                   setTimeout(() => setMode('idle'), 3500)
                 }}
-                className="flex flex-col items-center gap-1 p-1.5 rounded-xl hover:bg-white/10 active:scale-95 transition-all"
+                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition-all border border-white/5"
                 title="Battery HUD"
               >
                 <Zap className="w-4 h-4 text-yellow-400" />
-                <span className="text-[10px] text-neutral-300">Battery</span>
+                <span className="text-[10px] text-neutral-300 font-medium">Battery</span>
               </button>
 
               <button
@@ -382,11 +455,11 @@ export default function App() {
                   e.stopPropagation()
                   window.dynasis?.closeApp()
                 }}
-                className="flex flex-col items-center gap-1 p-1.5 rounded-xl hover:bg-red-500/20 active:scale-95 transition-all"
+                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-red-500/10 hover:bg-red-500/25 active:scale-95 transition-all border border-red-500/20"
                 title="Quit Dynasis"
               >
                 <Power className="w-4 h-4 text-red-400" />
-                <span className="text-[10px] text-red-400">Exit</span>
+                <span className="text-[10px] text-red-400 font-medium">Exit</span>
               </button>
             </div>
           </motion.div>

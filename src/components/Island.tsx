@@ -6,6 +6,7 @@ export type IslandMode = 'idle' | 'media' | 'shelf' | 'battery' | 'menu'
 interface IslandProps {
   mode: IslandMode
   isHovered: boolean
+  isAutoHide?: boolean
   onMouseEnter: () => void
   onMouseLeave: () => void
   onClick: () => void
@@ -13,27 +14,29 @@ interface IslandProps {
 }
 
 const modeDimensions: Record<IslandMode, { width: number; height: number; borderRadius: number }> = {
-  idle: { width: 140, height: 32, borderRadius: 20 },
-  battery: { width: 230, height: 42, borderRadius: 24 },
-  media: { width: 400, height: 78, borderRadius: 28 },
-  shelf: { width: 440, height: 82, borderRadius: 28 },
-  menu: { width: 340, height: 100, borderRadius: 28 },
+  idle: { width: 180, height: 36, borderRadius: 20 },
+  battery: { width: 240, height: 44, borderRadius: 24 },
+  media: { width: 420, height: 86, borderRadius: 28 },
+  shelf: { width: 460, height: 96, borderRadius: 28 },
+  menu: { width: 360, height: 136, borderRadius: 28 },
 }
 
 export const Island: React.FC<IslandProps> = ({
   mode,
   isHovered,
+  isAutoHide = false,
   onMouseEnter,
   onMouseLeave,
   onClick,
   children,
 }) => {
   const currentDim = modeDimensions[mode]
-  const targetWidth = isHovered && mode === 'idle' ? 175 : currentDim.width
-  const targetHeight = isHovered && mode === 'idle' ? 36 : currentDim.height
+  const targetWidth = isHovered && mode === 'idle' ? 210 : currentDim.width
+  const targetHeight = isHovered && mode === 'idle' ? 38 : currentDim.height
+  const targetY = isAutoHide && !isHovered && mode === 'idle' ? -22 : 0
 
   return (
-    <div className="w-full flex justify-center pt-2">
+    <div className="w-full flex justify-center pt-1.5">
       <motion.div
         layout
         initial={false}
@@ -41,11 +44,12 @@ export const Island: React.FC<IslandProps> = ({
           width: targetWidth,
           height: targetHeight,
           borderRadius: currentDim.borderRadius,
+          y: targetY,
         }}
         transition={{
           type: 'spring',
-          stiffness: 480,
-          damping: 32,
+          stiffness: 460,
+          damping: 30,
           mass: 0.8,
         }}
         onMouseEnter={onMouseEnter}

@@ -15,7 +15,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import zlib from 'zlib'
-import { execFile } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -247,9 +247,90 @@ function createTrayIcon(): Electron.NativeImage {
   return nativeImage.createFromBuffer(png)
 }
 
+const RUN_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+const STARTUP_APPROVED_REG_KEY =
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run'
+const AUTOSTART_VALUE_NAME = 'Dynasis'
+const LEGACY_AUTOSTART_NAMES = ['electron.app.Dynasis', 'electron.app.Electron']
+
+function regValueExists(keyPath: string, valueName: string): boolean {
+  try {
+    execFileSync('reg.exe', ['query', keyPath, '/v', valueName], {
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function regDeleteValue(keyPath: string, valueName: string): void {
+  try {
+    execFileSync('reg.exe', ['delete', keyPath, '/v', valueName, '/f'], {
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+  } catch {
+    // Ignore if value does not exist
+  }
+}
+
+function getAutoStartEnabled(): boolean {
+  if (process.platform !== 'win32') {
+    return app.getLoginItemSettings().openAtLogin
+  }
+  return (
+    regValueExists(RUN_REG_KEY, AUTOSTART_VALUE_NAME) ||
+    LEGACY_AUTOSTART_NAMES.some((name) => regValueExists(RUN_REG_KEY, name))
+  )
+}
+
+function setAutoStartEnabled(enabled: boolean): boolean {
+  if (process.platform !== 'win32') {
+    app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath })
+    return app.getLoginItemSettings().openAtLogin
+  }
+
+  // Always clean up legacy duplicate Electron entries
+  for (const legacyName of LEGACY_AUTOSTART_NAMES) {
+    regDeleteValue(RUN_REG_KEY, legacyName)
+    regDeleteValue(STARTUP_APPROVED_REG_KEY, legacyName)
+  }
+
+  if (enabled) {
+    const quotedExePath = `"${process.execPath}"`
+    try {
+      execFileSync(
+        'reg.exe',
+        ['add', RUN_REG_KEY, '/v', AUTOSTART_VALUE_NAME, '/t', 'REG_SZ', '/d', quotedExePath, '/f'],
+        { windowsHide: true, stdio: 'ignore' }
+      )
+      // Remove any disabled state in StartupApproved\Run so Windows Task Manager marks it Enabled
+      regDeleteValue(STARTUP_APPROVED_REG_KEY, AUTOSTART_VALUE_NAME)
+    } catch (err) {
+      console.error('Failed to set Windows Run registry key:', err)
+    }
+  } else {
+    regDeleteValue(RUN_REG_KEY, AUTOSTART_VALUE_NAME)
+    regDeleteValue(STARTUP_APPROVED_REG_KEY, AUTOSTART_VALUE_NAME)
+  }
+
+  return getAutoStartEnabled()
+}
+
+function migrateAutoStartRegistry(): void {
+  if (process.platform !== 'win32') return
+  const hasAny = getAutoStartEnabled()
+  if (hasAny) {
+    // Consolidate any legacy electron.app.* entries into a single clean quoted "Dynasis" entry
+    setAutoStartEnabled(true)
+  }
+}
+
 function updateTrayMenu() {
   if (!tray) return
-  const loginSettings = app.getLoginItemSettings()
+  const isAutoStart = getAutoStartEnabled()
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Dynasis — Dynamic System Island',
@@ -292,12 +373,9 @@ function updateTrayMenu() {
     {
       label: 'Jalankan Otomatis Saat Windows Menyala',
       type: 'checkbox',
-      checked: loginSettings.openAtLogin,
+      checked: isAutoStart,
       click: (menuItem) => {
-        app.setLoginItemSettings({
-          openAtLogin: menuItem.checked,
-          path: process.execPath,
-        })
+        setAutoStartEnabled(menuItem.checked)
         updateTrayMenu()
       },
     },
@@ -772,16 +850,13 @@ ipcMain.handle('app-action', async (_event, payload: { target: string; command?:
 })
 
 ipcMain.handle('get-autostart', async () => {
-  return app.getLoginItemSettings().openAtLogin
+  return getAutoStartEnabled()
 })
 
 ipcMain.handle('set-autostart', async (_event, enabled: boolean) => {
-  app.setLoginItemSettings({
-    openAtLogin: Boolean(enabled),
-    path: process.execPath,
-  })
+  const confirmed = setAutoStartEnabled(Boolean(enabled))
   updateTrayMenu()
-  return app.getLoginItemSettings().openAtLogin
+  return confirmed
 })
 
 ipcMain.on('start-file-drag', (event, filePath: string) => {
@@ -875,6 +950,8 @@ ipcMain.on('app-close', () => {
 })
 
 app.whenReady().then(() => {
+  app.setAppUserModelId('com.dynasis.island')
+  migrateAutoStartRegistry()
   setupSystemTray()
   createWindow()
 

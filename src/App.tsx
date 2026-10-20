@@ -376,9 +376,20 @@ export default function App() {
         clearTimeout(leaveTimerRef.current)
         leaveTimerRef.current = null
       }
-      setShelfItems((prev) => [data, ...prev])
+      setShelfItems((prev) => [data, ...prev].slice(0, 15))
       setView('shelf')
       setIslandState('expanded')
+    })
+  }, [])
+
+  // 1B. Native Clipboard Text & Link History listener (silent background capture on Ctrl+C)
+  useEffect(() => {
+    if (!window.dynasis?.onClipboardTextCaptured) return
+    return window.dynasis.onClipboardTextCaptured((data) => {
+      setShelfItems((prev) => {
+        const filtered = prev.filter((item) => item.text !== data.text)
+        return [data, ...filtered].slice(0, 15)
+      })
     })
   }, [])
 
@@ -522,13 +533,14 @@ export default function App() {
         const objectUrl = URL.createObjectURL(file)
         newItems.push({
           id: `file_${Date.now()}_${i}`,
+          type: 'file',
           filePath,
           dataUrl: objectUrl,
           name: file.name,
           timestamp: Date.now(),
         })
       }
-      setShelfItems((prev) => [...newItems, ...prev])
+      setShelfItems((prev) => [...newItems, ...prev].slice(0, 15))
       setView('shelf')
       setIslandState('expanded')
     }
@@ -551,17 +563,22 @@ export default function App() {
     const dataUrl = `data:image/svg+xml;base64,${btoa(svgContent)}`
     const sampleItem: ScreenshotItem = {
       id: `sample_${Date.now()}`,
+      type: 'image',
       dataUrl,
       name: `Capture_${new Date().toLocaleTimeString([], { hour12: false }).replace(/:/g, '')}.png`,
       timestamp: Date.now(),
       size: { width: 1920, height: 1080 },
     }
-    setShelfItems((prev) => [sampleItem, ...prev])
+    setShelfItems((prev) => [sampleItem, ...prev].slice(0, 15))
     setView('shelf')
     setIslandState('expanded')
   }
 
   const handleCopyScreenshot = async (item: ScreenshotItem) => {
+    if ((item.type === 'text' || item.text) && window.dynasis?.copyTextToClipboard) {
+      await window.dynasis.copyTextToClipboard(item.text || '')
+      return
+    }
     if (item.dataUrl && window.dynasis?.copyImageToClipboard) {
       await window.dynasis.copyImageToClipboard(item.dataUrl)
     }

@@ -15,13 +15,16 @@ export interface DynasisAPI {
   setIgnoreMouseEvents: (ignore: boolean, options?: { forward?: boolean }) => void
   onCursorMoved: (callback: (cursor: CursorPayload) => void) => () => void
   onTrayCommand: (callback: (command: 'open' | 'compact' | 'stealth' | 'settings') => void) => () => void
-  onScreenshotCaptured: (callback: (data: { id: string; filePath?: string; dataUrl: string; timestamp: number; size?: { width: number; height: number } }) => void) => () => void
+  onScreenshotCaptured: (callback: (data: { id: string; type?: 'image' | 'text' | 'file'; filePath?: string; dataUrl: string; text?: string; name?: string; timestamp: number; size?: { width: number; height: number } }) => void) => () => void
+  onClipboardTextCaptured: (callback: (data: { id: string; type: 'text'; text: string; name: string; dataUrl: string; timestamp: number }) => void) => () => void
   onMediaStateChanged: (callback: (media: any) => void) => () => void
   onBatteryStateChanged: (callback: (battery: any) => void) => () => void
   onAppsStateChanged: (callback: (data: any) => void) => () => void
   startFileDrag: (filePath: string) => void
   saveScreenshot: (dataUrl: string) => Promise<string | null>
   copyImageToClipboard: (dataUrl: string) => Promise<boolean>
+  copyTextToClipboard: (text: string) => Promise<boolean>
+  openExternalUrl: (url: string) => Promise<boolean>
   dismissScreenshot: (id: string) => void
   mediaAction: (action: 'play' | 'pause' | 'toggle' | 'next' | 'previous' | 'seek', value?: number) => void
   getCurrentMedia: () => Promise<any>
@@ -56,6 +59,11 @@ const api: DynasisAPI = {
     ipcRenderer.on('screenshot-captured', handler)
     return () => ipcRenderer.removeListener('screenshot-captured', handler)
   },
+  onClipboardTextCaptured: (callback) => {
+    const handler = (_: any, data: any) => callback(data)
+    ipcRenderer.on('clipboard-text-captured', handler)
+    return () => ipcRenderer.removeListener('clipboard-text-captured', handler)
+  },
   onMediaStateChanged: (callback) => {
     const handler = (_: any, data: any) => callback(data)
     ipcRenderer.on('media-state-changed', handler)
@@ -80,6 +88,8 @@ const api: DynasisAPI = {
   startFileDrag: (filePath: string) => ipcRenderer.send('start-file-drag', filePath),
   saveScreenshot: (dataUrl: string) => ipcRenderer.invoke('save-screenshot', dataUrl),
   copyImageToClipboard: (dataUrl: string) => ipcRenderer.invoke('copy-image-to-clipboard', dataUrl),
+  copyTextToClipboard: (text: string) => ipcRenderer.invoke('copy-text-to-clipboard', text),
+  openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
   dismissScreenshot: (id: string) => ipcRenderer.send('dismiss-screenshot', id),
   mediaAction: (action, value) => ipcRenderer.send('media-action', action, value),
   minimizeApp: () => ipcRenderer.send('app-minimize'),

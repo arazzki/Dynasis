@@ -145,6 +145,13 @@ function Get-AppSummary($id, $name, $procNames) {
 }
 
 if ($Mode -eq "status") {
+    # Check if Safe Exam Browser (SEB) is starting or running
+    $sebProcs = Get-Process -Name "SafeExamBrowser*", "SebWindows*" -ErrorAction SilentlyContinue
+    if ($sebProcs) {
+        @{ sebDetected = $true; apps = @(); activeApp = "SafeExamBrowser"; activeTitle = "SEB Exam Mode" } | ConvertTo-Json -Compress
+        exit 0
+    }
+
     $discord = Get-AppSummary "discord" "Discord" @("Discord")
     $spotify = Get-AppSummary "spotify" "Spotify" @("Spotify")
     $browser = Get-AppSummary "browser" "Browser" @("chrome", "msedge", "brave", "firefox")
@@ -168,6 +175,7 @@ if ($Mode -eq "status") {
     } catch {}
 
     $result = @{
+        sebDetected = $false
         activeApp = $activeAppName
         activeTitle = $activeAppTitle
         apps = @($spotify, $discord, $browser, $vscode)

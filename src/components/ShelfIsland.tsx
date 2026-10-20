@@ -10,12 +10,16 @@ import {
   FolderPlus,
   Camera,
   FileText,
+  Link2,
+  ExternalLink,
 } from 'lucide-react'
 
 export interface ScreenshotItem {
   id: string
+  type?: 'image' | 'text' | 'file'
   filePath?: string
   dataUrl: string
+  text?: string
   timestamp: number
   size?: { width: number; height: number }
   name?: string
@@ -53,10 +57,10 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
           </div>
           <div className="flex flex-col">
             <span className="text-[12.5px] font-semibold text-[#f5f6f8]">
-              Drop Box & Screenshot Shelf
+              Clipboard History & Drop Shelf
             </span>
             <span className="text-[11px] text-[#9398a1] mt-0.5">
-              Tekan <kbd className="px-1 py-0.5 text-[10px] bg-white/10 rounded">Win+Shift+S</kbd> atau tarik file ke sini untuk disimpan sementara.
+              Otomatis menyimpan <kbd className="px-1 py-0.5 text-[10px] bg-white/10 rounded">Ctrl+C</kbd> (Teks/Link), <kbd className="px-1 py-0.5 text-[10px] bg-white/10 rounded">Win+Shift+S</kbd>, & File Drop.
             </span>
           </div>
         </div>
@@ -104,11 +108,15 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
     setCurrentIndex((prev) => (prev < items.length - 1 ? prev + 1 : 0))
   }
 
+  const isText = currentItem.type === 'text' || Boolean(currentItem.text && !currentItem.dataUrl)
+  const isUrl = isText && Boolean(currentItem.text && /^https?:\/\/\S+$/i.test(currentItem.text.trim()))
+
   const isImage =
-    !currentItem.name ||
-    /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(currentItem.name) ||
-    currentItem.dataUrl.startsWith('data:image') ||
-    currentItem.dataUrl.startsWith('http')
+    !isText &&
+    (!currentItem.name ||
+      /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(currentItem.name) ||
+      currentItem.dataUrl.startsWith('data:image') ||
+      currentItem.dataUrl.startsWith('http'))
 
   return (
     <div
@@ -124,50 +132,76 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
         }}
       />
 
-      {/* Left: Draggable Thumbnail + File/Screenshot Details */}
-      <div className="relative z-10 flex items-center gap-3.5 min-w-0">
-        <div
-          draggable={Boolean(currentItem.filePath)}
-          onDragStart={handleDragStart}
-          className="relative w-20 h-14 rounded-xl overflow-hidden bg-[#0e0f11] border border-white/15 shadow-md group cursor-grab active:cursor-grabbing flex-shrink-0 flex items-center justify-center"
-          title="Drag keluar ke WhatsApp, Discord, Explorer, atau aplikasi lain"
-        >
-          {isImage ? (
-            <img
-              src={currentItem.dataUrl}
-              alt="Preview"
-              className="w-full h-full object-cover transition-transform group-hover:scale-105"
-            />
-          ) : (
-            <FileText className="w-6 h-6 text-blue-400" />
-          )}
-          <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-            <Move className="w-4 h-4 text-white drop-shadow" />
+      {/* Left: Thumbnail / Clipboard Text Preview + Details */}
+      <div className="relative z-10 flex items-center gap-3.5 min-w-0 flex-1 pr-2">
+        {isText ? (
+          <div
+            onClick={handleCopy}
+            className="relative w-20 h-14 rounded-xl overflow-hidden bg-[#0e0f11] border border-white/15 hover:border-blue-400/50 shadow-md p-2 cursor-pointer flex-shrink-0 flex flex-col justify-between transition-colors"
+            title="Klik untuk menyalin ulang teks ini ke Clipboard"
+          >
+            <div className="flex items-center justify-between text-blue-400">
+              {isUrl ? <Link2 className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}
+              <span className="text-[8.5px] font-mono uppercase text-[#8e939c]">
+                {isUrl ? 'URL' : 'TXT'}
+              </span>
+            </div>
+            <p className="text-[9px] text-[#c5c8cd] line-clamp-2 leading-tight font-mono break-all">
+              {currentItem.text?.slice(0, 60)}
+            </p>
           </div>
-        </div>
+        ) : (
+          <div
+            draggable={Boolean(currentItem.filePath)}
+            onDragStart={handleDragStart}
+            className="relative w-20 h-14 rounded-xl overflow-hidden bg-[#0e0f11] border border-white/15 shadow-md group cursor-grab active:cursor-grabbing flex-shrink-0 flex items-center justify-center"
+            title="Drag keluar ke WhatsApp, Discord, Explorer, atau aplikasi lain"
+          >
+            {isImage ? (
+              <img
+                src={currentItem.dataUrl}
+                alt="Preview"
+                className="w-full h-full object-cover transition-transform group-hover:scale-105"
+              />
+            ) : (
+              <FileText className="w-6 h-6 text-blue-400" />
+            )}
+            <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              <Move className="w-4 h-4 text-white drop-shadow" />
+            </div>
+          </div>
+        )}
 
-        <div className="flex flex-col min-w-0">
-          <div className="flex items-center gap-1.5">
+        <div className="flex flex-col min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 min-w-0">
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse flex-shrink-0" />
-            <span className="text-[12.5px] font-semibold text-[#f5f6f8] truncate max-w-[160px]">
-              {currentItem.name || `Screenshot #${items.length - validIndex}`}
+            <span className="text-[12px] font-semibold text-[#f5f6f8] truncate">
+              {currentItem.name || `Item #${items.length - validIndex}`}
             </span>
           </div>
-          <span className="text-[11px] text-[#9398a1] flex items-center gap-1 mt-0.5">
-            <Move className="w-3 h-3 text-blue-400 flex-shrink-0" />
-            <span>Tarik gambar keluar atau klik Copy</span>
-          </span>
-          {currentItem.size && (
-            <span className="text-[10px] text-[#6b7079] mt-0.5 font-mono">
-              {currentItem.size.width} × {currentItem.size.height} px
+          {isText ? (
+            <span className="text-[10.5px] text-[#c5c8cd] line-clamp-2 mt-0.5 font-mono bg-black/30 px-2 py-0.5 rounded border border-white/[0.05] break-all">
+              {currentItem.text}
             </span>
+          ) : (
+            <>
+              <span className="text-[11px] text-[#9398a1] flex items-center gap-1 mt-0.5">
+                <Move className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                <span>Tarik gambar keluar atau klik Copy</span>
+              </span>
+              {currentItem.size && (
+                <span className="text-[10px] text-[#6b7079] mt-0.5 font-mono">
+                  {currentItem.size.width} × {currentItem.size.height} px
+                </span>
+              )}
+            </>
           )}
         </div>
       </div>
 
       {/* Center: Multi-item pagination */}
       {items.length > 1 && (
-        <div className="relative z-10 flex items-center gap-1 bg-white/[0.06] rounded-full px-1.5 py-0.5 border border-white/10 flex-shrink-0">
+        <div className="relative z-10 flex items-center gap-1 bg-white/[0.06] rounded-full px-1.5 py-0.5 border border-white/10 flex-shrink-0 mr-2">
           <button
             onClick={handlePrev}
             className="p-1 hover:bg-white/10 rounded-full text-neutral-300 hover:text-white"
@@ -193,7 +227,7 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
         <button
           onClick={handleCopy}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f5f6f8] text-[#0b0c0e] hover:bg-white active:scale-95 transition-all text-[11.5px] rounded-full font-semibold shadow"
-          title="Salin ke Clipboard"
+          title="Salin kembali ke Clipboard"
         >
           {copied ? (
             <>
@@ -208,16 +242,31 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
           )}
         </button>
 
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onSave(currentItem)
-          }}
-          className="p-2 bg-white/[0.08] hover:bg-white/[0.15] active:scale-95 transition-all rounded-full text-[#f5f6f8] border border-white/10"
-          title="Simpan sebagai file PNG"
-        >
-          <Download className="w-3.5 h-3.5" />
-        </button>
+        {isUrl && currentItem.text ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              window.dynasis?.openExternalUrl?.(currentItem.text!.trim())
+            }}
+            className="p-2 bg-blue-500/20 hover:bg-blue-500/35 active:scale-95 transition-all rounded-full text-blue-300 border border-blue-400/30"
+            title="Buka Link di Browser"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+        ) : (
+          !isText && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onSave(currentItem)
+              }}
+              className="p-2 bg-white/[0.08] hover:bg-white/[0.15] active:scale-95 transition-all rounded-full text-[#f5f6f8] border border-white/10"
+              title="Simpan sebagai file PNG"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </button>
+          )
+        )}
 
         <button
           onClick={(e) => {

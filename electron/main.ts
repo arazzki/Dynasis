@@ -9,6 +9,7 @@ import {
   globalShortcut,
   Tray,
   Menu,
+  shell,
 } from 'electron'
 import path from 'path'
 import fs from 'fs'
@@ -50,6 +51,7 @@ app.on('second-instance', () => {
 })
 
 let lastClipboardImageHash = ''
+let lastClipboardText = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
 let mediaPollInterval: NodeJS.Timeout | null = null
 let batteryPollInterval: NodeJS.Timeout | null = null
@@ -522,12 +524,33 @@ function startClipboardWatcher() {
   try {
     const initial = clipboard.readImage()
     if (!initial.isEmpty()) lastClipboardImageHash = imageHash(initial)
+    lastClipboardText = (clipboard.readText() || '').trim()
   } catch {
     /* ignore */
   }
 
   clipboardPollInterval = setInterval(() => {
     try {
+      // 1. Check for new copied text / URLs
+      const rawText = (clipboard.readText() || '').trim()
+      if (rawText && rawText.length >= 2 && rawText !== lastClipboardText) {
+        lastClipboardText = rawText
+        const timestamp = Date.now()
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('clipboard-text-captured', {
+            id: `txt_${timestamp}`,
+            type: 'text',
+            text: rawText.slice(0, 4000),
+            name: /^https?:\/\//i.test(rawText)
+              ? `Link: ${rawText.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 32)}`
+              : `Teks: ${rawText.replace(/\s+/g, ' ').slice(0, 30)}`,
+            dataUrl: '',
+            timestamp,
+          })
+        }
+      }
+
+      // 2. Check for new screenshots / copied images
       const image = clipboard.readImage()
       if (image.isEmpty()) return
 
@@ -549,6 +572,7 @@ function startClipboardWatcher() {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('screenshot-captured', {
             id: `ss_${timestamp}`,
+            type: 'image',
             filePath,
             dataUrl,
             timestamp,
@@ -627,11 +651,26 @@ function startAppsWatcher() {
     busy = true
     try {
       const output = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
-      if (output && output !== lastAppsSignature) {
-        lastAppsSignature = output
+      if (output) {
         const data = JSON.parse(output)
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('apps-state-changed', data)
+        // Safe Exam Browser (SEB) Guard: immediately self-terminate if SEB starts!
+        if (data && data.sebDetected) {
+          globalShortcut.unregisterAll()
+          if (tray) {
+            tray.destroy()
+            tray = null
+          }
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.destroy()
+          }
+          app.exit(0)
+          return
+        }
+        if (output !== lastAppsSignature) {
+          lastAppsSignature = output
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('apps-state-changed', data)
+          }
         }
       }
     } catch {
@@ -641,7 +680,7 @@ function startAppsWatcher() {
     }
   }
 
-  appsPollInterval = setInterval(checkApps, 2500)
+  appsPollInterval = setInterval(checkApps, 2000)
 }
 
 // IPC Handlers
@@ -773,6 +812,27 @@ ipcMain.handle('copy-image-to-clipboard', async (_event, dataUrl: string) => {
     console.error('Error copying image:', err)
     return false
   }
+})
+
+ipcMain.handle('copy-text-to-clipboard', async (_event, text: string) => {
+  try {
+    lastClipboardText = (text || '').trim()
+    clipboard.writeText(text || '')
+    return true
+  } catch (err) {
+    console.error('Error copying text:', err)
+    return false
+  }
+})
+
+ipcMain.handle('open-external-url', async (_event, url: string) => {
+  try {
+    if (url && /^https?:\/\//i.test(url)) {
+      await shell.openExternal(url)
+      return true
+    }
+  } catch {}
+  return false
 })
 
 ipcMain.on('dismiss-screenshot', () => {

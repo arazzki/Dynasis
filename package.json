@@ -5,9 +5,37 @@
   "description": "Dynamic System Island for Windows with Screenshot Shelf, Media Controls, and System HUDs",
   "main": "dist-electron/main.js",
   "scripts": {
+    "start": "tsc && vite build && electron .",
     "dev": "vite",
+    "pack": "tsc && vite build && electron-builder --dir",
     "build": "tsc && vite build && electron-builder",
     "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.arazzki.dynasis",
+    "productName": "Dynasis",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "electron/preload.cjs",
+      "electron/scripts/**/*"
+    ],
+    "asarUnpack": [
+      "electron/scripts/**/*",
+      "electron/preload.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/scripts",
+        "to": "scripts"
+      }
+    ],
+    "win": {
+      "target": "dir"
+    }
   },
   "keywords": [
     "dynamic-island",

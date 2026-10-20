@@ -14,6 +14,9 @@ import {
   RotateCcw,
   Power,
   Camera,
+  Play,
+  Pause,
+  SkipForward,
 } from 'lucide-react'
 import { Island, IslandState, NotchStyle } from './components/Island'
 import { MediaIsland, MediaState } from './components/MediaIsland'
@@ -55,6 +58,7 @@ export default function App() {
   const [isPinned, setIsPinned] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [prefs, setPrefs] = useState<DynasisPreferences>(loadPrefs)
+  const [autoStart, setAutoStart] = useState(false)
 
   const [shelfItems, setShelfItems] = useState<ScreenshotItem[]>([])
   const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
@@ -91,6 +95,15 @@ export default function App() {
       }
       return next
     })
+  }
+
+  const toggleAutoStart = async () => {
+    const next = !autoStart
+    setAutoStart(next)
+    if (window.dynasis?.setAutoStart) {
+      const confirmed = await window.dynasis.setAutoStart(next)
+      setAutoStart(confirmed)
+    }
   }
 
   // Live clock for compact notch (coucou style)
@@ -174,6 +187,26 @@ export default function App() {
     })
   }, [])
 
+  // Subscribe to System Tray commands
+  useEffect(() => {
+    if (!window.dynasis?.onTrayCommand) return
+    return window.dynasis.onTrayCommand((cmd) => {
+      if (cmd === 'open') {
+        setView('overview')
+        setIslandState('expanded')
+      } else if (cmd === 'compact') {
+        setIsPinned(false)
+        setIslandState('compact')
+      } else if (cmd === 'stealth') {
+        setIsPinned(false)
+        setIslandState('hidden')
+      } else if (cmd === 'settings') {
+        setView('settings')
+        setIslandState('expanded')
+      }
+    })
+  }, [])
+
   // Keyboard shortcut: Escape folds expanded island back to compact
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -186,7 +219,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [islandState])
 
-  // Initial media & battery fetch
+  // Initial media, battery & autostart fetch
   useEffect(() => {
     window.dynasis?.getCurrentMedia?.().then((data) => {
       if (data && data.hasMedia) {
@@ -211,6 +244,10 @@ export default function App() {
           isCharging: data.isCharging,
         })
       }
+    })
+
+    window.dynasis?.getAutoStart?.().then((on) => {
+      setAutoStart(Boolean(on))
     })
   }, [])
 
@@ -241,7 +278,6 @@ export default function App() {
           updatedAt: Date.now(),
           appId: data.appId || prev.appId,
         }))
-        // Wake from hidden to compact when music starts playing (like coucou revealSilently)
         if (isPlaying && stateRef.current === 'hidden') {
           setIslandState('compact')
         }
@@ -475,7 +511,7 @@ export default function App() {
             title="Klik untuk membuka Dynasis · Klik kanan untuk Pengaturan"
           >
             {/* Left: Album Art / Dot + Title */}
-            <div className="flex items-center gap-2 min-w-0 max-w-[155px]">
+            <div className="flex items-center gap-2 min-w-0 max-w-[150px]">
               {media.albumArt ? (
                 <img
                   src={media.albumArt}
@@ -497,31 +533,60 @@ export default function App() {
               </span>
             </div>
 
-            {/* Center: Optional Clock when no long track title or on hover */}
+            {/* Center: Optional Clock when no active media */}
             {prefs.showClock && !hasActiveMedia && (
               <span className="text-[11px] font-mono text-white/75 tabular-nums">
                 {clockText}
               </span>
             )}
 
-            {/* Right: Equalizer + Shelf Badge + Battery + Quick Hide button */}
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {media.isPlaying && (
-                <div className="flex items-end gap-[2px] h-3">
-                  {[0, 1, 2, 3].map((i) => (
-                    <motion.span
-                      key={i}
-                      className="w-[2.2px] bg-emerald-400 rounded-full"
-                      animate={{ height: ['3px', '11px', '4px', '9px', '3px'] }}
-                      transition={{
-                        repeat: Infinity,
-                        duration: 0.65,
-                        delay: i * 0.14,
-                        ease: 'easeInOut',
-                      }}
-                    />
-                  ))}
+            {/* Right: Quick Play/Pause on Hover (coucou pill style) OR Equalizer + Shelf + Battery */}
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {hasActiveMedia && isHovered ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleMediaAction(media.isPlaying ? 'pause' : 'play')
+                    }}
+                    className="w-5 h-5 rounded-full bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 flex items-center justify-center text-emerald-300 transition-colors"
+                    title={media.isPlaying ? 'Pause' : 'Play'}
+                  >
+                    {media.isPlaying ? (
+                      <Pause className="w-2.5 h-2.5 fill-current" />
+                    ) : (
+                      <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleMediaAction('next')
+                    }}
+                    className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 flex items-center justify-center text-white transition-colors"
+                    title="Next Track"
+                  >
+                    <SkipForward className="w-2.5 h-2.5 fill-current" />
+                  </button>
                 </div>
+              ) : (
+                media.isPlaying && (
+                  <div className="flex items-end gap-[2px] h-3">
+                    {[0, 1, 2, 3].map((i) => (
+                      <motion.span
+                        key={i}
+                        className="w-[2.2px] bg-emerald-400 rounded-full"
+                        animate={{ height: ['3px', '11px', '4px', '9px', '3px'] }}
+                        transition={{
+                          repeat: Infinity,
+                          duration: 0.65,
+                          delay: i * 0.14,
+                          ease: 'easeInOut',
+                        }}
+                      />
+                    ))}
+                  </div>
+                )
               )}
 
               {shelfItems.length > 0 && (
@@ -538,14 +603,13 @@ export default function App() {
                 </button>
               )}
 
-              <div className="flex items-center gap-1 text-[10.5px] font-mono text-[#9398a1] tabular-nums">
+              <div className="flex items-center gap-0.5 text-[10.5px] font-mono text-[#9398a1] tabular-nums">
                 {battery.isCharging && (
                   <Zap className="w-3 h-3 text-emerald-400 fill-current" />
                 )}
                 <span>{battery.level}%</span>
               </div>
 
-              {/* One-click Stealth Hide button on hover so user can immediately click browser tabs underneath */}
               <button
                 onClick={(e) => {
                   e.stopPropagation()
@@ -622,7 +686,6 @@ export default function App() {
 
               {/* Right Header Actions */}
               <div className="flex items-center gap-1">
-                {/* Drag Handle to reposition window */}
                 <button
                   onMouseDown={(e) => {
                     e.stopPropagation()
@@ -634,7 +697,6 @@ export default function App() {
                   <Move className="w-3.5 h-3.5" />
                 </button>
 
-                {/* Pin Open Toggle */}
                 <button
                   onClick={() => setIsPinned((p) => !p)}
                   className={`p-1.5 rounded-full transition-colors ${
@@ -647,7 +709,6 @@ export default function App() {
                   <Pin className="w-3.5 h-3.5" />
                 </button>
 
-                {/* Stealth Hide to 5px Top Edge */}
                 <button
                   onClick={() => {
                     setIsPinned(false)
@@ -659,7 +720,6 @@ export default function App() {
                   <EyeOff className="w-3.5 h-3.5" />
                 </button>
 
-                {/* Settings Tab Button */}
                 <button
                   onClick={() =>
                     setView((v) => (v === 'settings' ? 'overview' : 'settings'))
@@ -674,7 +734,6 @@ export default function App() {
                   <Settings className="w-3.5 h-3.5" />
                 </button>
 
-                {/* Collapse to Compact Pill */}
                 <button
                   onClick={() => {
                     setIsPinned(false)
@@ -690,7 +749,6 @@ export default function App() {
 
             {/* ── Active View Body (142px height) ── */}
             <div className="relative flex-1 min-h-0 mt-1">
-              {/* Drag-Over Overlay */}
               {isDragOver && (
                 <div className="w-full h-full rounded-[18px] bg-emerald-500/10 border-2 border-dashed border-emerald-400/60 flex flex-col items-center justify-center gap-1.5 text-emerald-300">
                   <FolderPlus className="w-6 h-6 animate-bounce" />
@@ -700,10 +758,9 @@ export default function App() {
                 </div>
               )}
 
-              {/* VIEW 1: OVERVIEW (Coucou two-column layout: Left Media Card + Right Status Pills) */}
+              {/* VIEW 1: OVERVIEW */}
               {!isDragOver && view === 'overview' && (
                 <div className="flex gap-2.5 w-full h-full">
-                  {/* Left Column (348px): Live Media Card */}
                   <div className="w-[348px] flex-shrink-0 h-full">
                     <MediaIsland
                       media={media}
@@ -717,9 +774,7 @@ export default function App() {
                     />
                   </div>
 
-                  {/* Right Column: Coucou-style Interactive Pills */}
                   <div className="flex-1 h-full rounded-[18px] bg-[#141518] border border-white/[0.05] p-2 flex flex-col justify-between gap-1.5">
-                    {/* Pill 1: Drop Shelf */}
                     <button
                       onClick={() => setView('shelf')}
                       className="group w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] hover:bg-blue-500/15 border border-white/[0.06] hover:border-blue-400/40 transition-all text-left"
@@ -744,7 +799,6 @@ export default function App() {
                       </span>
                     </button>
 
-                    {/* Pill 2: Battery & System Power */}
                     <div className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06]">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <div className="w-6 h-6 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 flex-shrink-0">
@@ -771,7 +825,6 @@ export default function App() {
                       </span>
                     </div>
 
-                    {/* Pill 3: Quick Stealth / Sample Capture */}
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={simulateScreenshot}
@@ -823,29 +876,50 @@ export default function App() {
                 />
               )}
 
-              {/* VIEW 4: COUCOU-STYLE SETTINGS VIEW */}
+              {/* VIEW 4: COUCOU-STYLE SETTINGS VIEW (with Windows Startup Toggle) */}
               {!isDragOver && view === 'settings' && (
-                <div className="w-full h-full rounded-[18px] bg-[#141518] border border-white/[0.05] px-4 py-3 flex flex-col justify-between text-xs">
-                  {/* Row 1: Open on Hover + Auto-Hide to Edge */}
-                  <div className="grid grid-cols-2 gap-3">
+                <div className="w-full h-full rounded-[18px] bg-[#141518] border border-white/[0.05] px-3.5 py-2.5 flex flex-col justify-between text-xs">
+                  {/* Row 1: 3 Toggles (Launch at Startup, Open on Hover, Auto-Stealth Edge) */}
+                  <div className="grid grid-cols-3 gap-2">
                     <button
-                      onClick={() => updatePrefs({ openOnHover: !prefs.openOnHover })}
-                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                      onClick={toggleAutoStart}
+                      className="flex items-center justify-between px-2.5 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
                     >
-                      <div className="flex flex-col text-left">
-                        <span className="text-[11.5px] font-semibold text-[#f5f6f8]">
-                          Open on Hover
+                      <div className="flex flex-col text-left min-w-0 pr-1">
+                        <span className="text-[11px] font-semibold text-[#f5f6f8] truncate">
+                          Auto-Start OS
                         </span>
-                        <span className="text-[10px] text-[#8e939c]">
-                          {prefs.openOnHover ? 'Buka saat disentuh' : 'Klik untuk buka'}
+                        <span className="text-[9.5px] text-[#8e939c] truncate">
+                          {autoStart ? 'Aktif saat boot' : 'Manual'}
                         </span>
                       </div>
                       <div
-                        className={`w-8 h-4.5 rounded-full p-0.5 transition-colors flex items-center ${
+                        className={`w-7 h-4 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${
+                          autoStart ? 'bg-emerald-500 justify-end' : 'bg-white/15 justify-start'
+                        }`}
+                      >
+                        <div className="w-3 h-3 rounded-full bg-white shadow" />
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => updatePrefs({ openOnHover: !prefs.openOnHover })}
+                      className="flex items-center justify-between px-2.5 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                    >
+                      <div className="flex flex-col text-left min-w-0 pr-1">
+                        <span className="text-[11px] font-semibold text-[#f5f6f8] truncate">
+                          Open on Hover
+                        </span>
+                        <span className="text-[9.5px] text-[#8e939c] truncate">
+                          {prefs.openOnHover ? 'Sentuh buka' : 'Klik buka'}
+                        </span>
+                      </div>
+                      <div
+                        className={`w-7 h-4 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${
                           prefs.openOnHover ? 'bg-emerald-500 justify-end' : 'bg-white/15 justify-start'
                         }`}
                       >
-                        <div className="w-3.5 h-3.5 rounded-full bg-white shadow" />
+                        <div className="w-3 h-3 rounded-full bg-white shadow" />
                       </div>
                     </button>
 
@@ -853,40 +927,38 @@ export default function App() {
                       onClick={() =>
                         updatePrefs({ autoHideToEdge: !prefs.autoHideToEdge })
                       }
-                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                      className="flex items-center justify-between px-2.5 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
                     >
-                      <div className="flex flex-col text-left">
-                        <span className="text-[11.5px] font-semibold text-[#f5f6f8]">
-                          Auto-Stealth Edge
+                      <div className="flex flex-col text-left min-w-0 pr-1">
+                        <span className="text-[11px] font-semibold text-[#f5f6f8] truncate">
+                          Stealth Edge
                         </span>
-                        <span className="text-[10px] text-[#8e939c]">
-                          {prefs.autoHideToEdge
-                            ? 'Bebas halangan tab browser'
-                            : 'Tetap tampil sebagai pill'}
+                        <span className="text-[9.5px] text-[#8e939c] truncate">
+                          {prefs.autoHideToEdge ? 'Auto lipat 5px' : 'Tetap pill'}
                         </span>
                       </div>
                       <div
-                        className={`w-8 h-4.5 rounded-full p-0.5 transition-colors flex items-center ${
+                        className={`w-7 h-4 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${
                           prefs.autoHideToEdge
                             ? 'bg-emerald-500 justify-end'
                             : 'bg-white/15 justify-start'
                         }`}
                       >
-                        <div className="w-3.5 h-3.5 rounded-full bg-white shadow" />
+                        <div className="w-3 h-3 rounded-full bg-white shadow" />
                       </div>
                     </button>
                   </div>
 
                   {/* Row 2: Auto-Close Timer + Notch Shape */}
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 bg-[#0e0f11] px-3 py-1.5 rounded-xl border border-white/[0.06]">
-                      <span className="text-[11px] text-[#9398a1]">Auto-close:</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 bg-[#0e0f11] px-2.5 py-1.5 rounded-xl border border-white/[0.06]">
+                      <span className="text-[10.5px] text-[#9398a1]">Auto-close:</span>
                       <div className="flex items-center gap-1 bg-white/[0.05] p-0.5 rounded-lg">
                         {[10, 15, 30, 0].map((sec) => (
                           <button
                             key={sec}
                             onClick={() => updatePrefs({ autoCloseSeconds: sec })}
-                            className={`px-2 py-0.5 rounded-md text-[10.5px] font-medium transition-colors ${
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors ${
                               prefs.autoCloseSeconds === sec
                                 ? 'bg-[#f5f6f8] text-[#0b0c0e]'
                                 : 'text-[#8e939c] hover:text-white'
@@ -898,14 +970,14 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 bg-[#0e0f11] px-3 py-1.5 rounded-xl border border-white/[0.06]">
-                      <span className="text-[11px] text-[#9398a1]">Style:</span>
+                    <div className="flex items-center gap-2 bg-[#0e0f11] px-2.5 py-1.5 rounded-xl border border-white/[0.06]">
+                      <span className="text-[10.5px] text-[#9398a1]">Style:</span>
                       <div className="flex items-center gap-1 bg-white/[0.05] p-0.5 rounded-lg">
                         {(['notch', 'pill'] as NotchStyle[]).map((st) => (
                           <button
                             key={st}
                             onClick={() => updatePrefs({ notchStyle: st })}
-                            className={`px-2 py-0.5 rounded-md text-[10.5px] font-medium capitalize transition-colors ${
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-medium capitalize transition-colors ${
                               prefs.notchStyle === st
                                 ? 'bg-[#f5f6f8] text-[#0b0c0e]'
                                 : 'text-[#8e939c] hover:text-white'
@@ -918,13 +990,13 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Row 3: Position Reset, Hotkey Hint, and Quit */}
+                  {/* Row 3: System Tray Hint, Position Reset, and Quit */}
                   <div className="flex items-center justify-between pt-0.5">
-                    <span className="text-[10.5px] text-[#6b7079]">
-                      Shortcut: <kbd className="px-1.5 py-0.5 bg-white/10 rounded text-[#9398a1]">Alt + \</kbd> Show/Hide · <kbd className="px-1.5 py-0.5 bg-white/10 rounded text-[#9398a1]">Alt + Drag</kbd> Move
+                    <span className="text-[10px] text-[#6b7079]">
+                      Aktif di <b className="text-[#9398a1]">System Tray</b> · <kbd className="px-1 py-0.5 bg-white/10 rounded text-[#9398a1]">Alt+\</kbd> Toggle · <kbd className="px-1 py-0.5 bg-white/10 rounded text-[#9398a1]">Alt+Drag</kbd> Geser
                     </span>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => window.dynasis?.resetWindowPosition()}
                         className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.14] text-[10.5px] text-[#f5f6f8] transition-colors"

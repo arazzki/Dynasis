@@ -31,19 +31,45 @@ try {
     $asyncOp = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
     $manager = Await $asyncOp ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
 
-    # Prefer any session that is currently Playing across all sessions, fallback to GetCurrentSession()
+    # Priority: 1) Playing Spotify session, 2) Any Playing session, 3) Paused Spotify session, 4) GetCurrentSession(), 5) First session
     $session = $null
     $allSessions = $manager.GetSessions()
     if ($allSessions -and $allSessions.Count -gt 0) {
+        # 1. Playing Spotify session
         foreach ($s in $allSessions) {
             try {
                 $info = $s.GetPlaybackInfo()
-                if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing') {
+                $id = $s.SourceAppUserModelId
+                if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing' -and $id -match '(?i)spotify') {
                     $session = $s
                     break
                 }
             } catch {}
         }
+        # 2. Any Playing session
+        if (-not $session) {
+            foreach ($s in $allSessions) {
+                try {
+                    $info = $s.GetPlaybackInfo()
+                    if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing') {
+                        $session = $s
+                        break
+                    }
+                } catch {}
+            }
+        }
+        # 3. Any Spotify session (even if Paused)
+        if (-not $session) {
+            foreach ($s in $allSessions) {
+                try {
+                    if ($s.SourceAppUserModelId -match '(?i)spotify') {
+                        $session = $s
+                        break
+                    }
+                } catch {}
+            }
+        }
+        # 4. Fallback to GetCurrentSession or first session
         if (-not $session) {
             $session = $manager.GetCurrentSession()
         }

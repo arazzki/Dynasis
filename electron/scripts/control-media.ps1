@@ -29,11 +29,33 @@ try {
         foreach ($s in $allSessions) {
             try {
                 $info = $s.GetPlaybackInfo()
-                if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing') {
+                $id = $s.SourceAppUserModelId
+                if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing' -and $id -match '(?i)spotify') {
                     $session = $s
                     break
                 }
             } catch {}
+        }
+        if (-not $session) {
+            foreach ($s in $allSessions) {
+                try {
+                    $info = $s.GetPlaybackInfo()
+                    if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing') {
+                        $session = $s
+                        break
+                    }
+                } catch {}
+            }
+        }
+        if (-not $session) {
+            foreach ($s in $allSessions) {
+                try {
+                    if ($s.SourceAppUserModelId -match '(?i)spotify') {
+                        $session = $s
+                        break
+                    }
+                } catch {}
+            }
         }
         if (-not $session) {
             $session = $manager.GetCurrentSession()
@@ -53,7 +75,6 @@ try {
             "next" { Await ($session.TrySkipNextAsync()) ([bool]) | Out-Null }
             "previous" { Await ($session.TrySkipPreviousAsync()) ([bool]) | Out-Null }
             "seek" {
-                # Convert seconds to 100-nanosecond ticks
                 $ticks = [long]([math]::Round($Value * 10000000))
                 Await ($session.TryChangePlaybackPositionAsync($ticks)) ([bool]) | Out-Null
             }

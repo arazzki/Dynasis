@@ -1,7 +1,19 @@
-import { app, BrowserWindow, ipcMain, screen, clipboard, nativeImage, dialog, globalShortcut } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  screen,
+  clipboard,
+  nativeImage,
+  dialog,
+  globalShortcut,
+  Tray,
+  Menu,
+} from 'electron'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import zlib from 'zlib'
 import { execFile } from 'child_process'
 import { fileURLToPath } from 'url'
 
@@ -11,11 +23,11 @@ const __dirname = path.dirname(__filename)
 // Fixed canvas size (coucou architecture: never clips spring animations, click-through outside islandRect)
 const PANEL_W = 680
 const PANEL_H = 280
-const HIT_MARGIN = 14
-const WAKE_STRIP_W = 240
-const WAKE_STRIP_H = 8
+const HIT_MARGIN = 18
+const WAKE_STRIP_W = 250
+const WAKE_STRIP_H = 10
 
-// Prevent Windows GPU/HTTP disk cache lock contention (cache_util_win.cc / gpu_disk_cache.cc)
+// Prevent Windows GPU/HTTP disk cache lock contention
 app.commandLine.appendSwitch('disable-http-cache')
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 app.commandLine.appendSwitch('disable-gpu-program-cache')
@@ -26,14 +38,17 @@ if (!gotTheLock) {
   app.exit(0)
 }
 
+let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+
 app.on('second-instance', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.setAlwaysOnTop(true, 'screen-saver')
+    mainWindow.webContents.send('tray-command', 'open')
   }
 })
 
-let mainWindow: BrowserWindow | null = null
 let lastClipboardImageHash = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
 let mediaPollInterval: NodeJS.Timeout | null = null
@@ -50,7 +65,7 @@ let islandRect = {
   x: (PANEL_W - 288) / 2,
   y: 0,
   w: 288,
-  h: 36,
+  h: 38,
 }
 let isIgnoringMouse = false
 let lastCursor = { x: -9999, y: -9999, onIsland: false, onWakeStrip: false }
@@ -63,6 +78,20 @@ if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true })
 }
 
+function getPreloadPath(): string {
+  const candidates = [
+    path.join(process.resourcesPath, 'app.asar.unpacked/electron/preload.cjs'),
+    path.join(__dirname, '../electron/preload.cjs'),
+    path.join(__dirname, 'preload.cjs'),
+    path.join(app.getAppPath(), 'electron/preload.cjs'),
+    path.join(app.getAppPath(), 'dist-electron/preload.cjs'),
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
+  return candidates[0]
+}
+
 function getScriptPath(scriptName: string): string {
   const candidates = [
     path.join(__dirname, '../electron/scripts', scriptName),
@@ -70,6 +99,7 @@ function getScriptPath(scriptName: string): string {
     path.join(process.cwd(), 'electron/scripts', scriptName),
     path.join(app.getAppPath(), 'electron/scripts', scriptName),
     path.join(process.resourcesPath, 'scripts', scriptName),
+    path.join(process.resourcesPath, 'app.asar.unpacked/electron/scripts', scriptName),
   ]
   for (const p of candidates) {
     if (fs.existsSync(p)) return p
@@ -95,9 +125,10 @@ function runPowerShellScript(scriptName: string, args: string[] = []): Promise<s
   })
 }
 
-async function fetchMediaState(): Promise<any | null> {
+async function fetchMediaState(forceFreshArt = false): Promise<any | null> {
   try {
-    const args = lastTrackKey ? ['-LastTrackKey', lastTrackKey] : []
+    const canUseCache = !forceFreshArt && Boolean(lastTrackKey && cachedAlbumArt)
+    const args = canUseCache ? ['-LastTrackKey', lastTrackKey] : []
     const output = await runPowerShellScript('get-media.ps1', args)
     if (!output) return null
     const data = JSON.parse(output)
@@ -118,6 +149,185 @@ async function fetchMediaState(): Promise<any | null> {
   } catch {
     return null
   }
+}
+
+/**
+ * Generates a crisp 32x32 RGBA PNG icon in-memory for the Windows System Tray
+ * (Black rounded pill with an emerald glowing core).
+ */
+function createTrayIcon(): Electron.NativeImage {
+  const w = 32
+  const h = 32
+  const raw = Buffer.alloc((w * 4 + 1) * h)
+
+  for (let y = 0; y < h; y++) {
+    const rowStart = y * (w * 4 + 1)
+    raw[rowStart] = 0 // PNG filter type 0
+    for (let x = 0; x < w; x++) {
+      const idx = rowStart + 1 + x * 4
+      const dx = Math.abs(x - 15.5)
+      const dy = Math.abs(y - 15.5)
+      // Rounded square / circle icon
+      const dist = Math.hypot(Math.max(0, dx - 6), Math.max(0, dy - 6))
+      if (dist <= 8.5) {
+        // Inside icon background (dark obsidian)
+        const dotDist = Math.hypot(x - 15.5, y - 15.5)
+        if (dotDist <= 5.2) {
+          // Emerald core (#10b981)
+          raw[idx] = 16
+          raw[idx + 1] = 185
+          raw[idx + 2] = 129
+          raw[idx + 3] = 255
+        } else {
+          raw[idx] = 18
+          raw[idx + 1] = 20
+          raw[idx + 2] = 24
+          raw[idx + 3] = 255
+        }
+      } else {
+        raw[idx] = 0
+        raw[idx + 1] = 0
+        raw[idx + 2] = 0
+        raw[idx + 3] = 0
+      }
+    }
+  }
+
+  function crc32(buf: Buffer): number {
+    let c = 0xffffffff
+    for (let i = 0; i < buf.length; i++) {
+      c ^= buf[i]
+      for (let k = 0; k < 8; k++) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      }
+    }
+    return (c ^ 0xffffffff) >>> 0
+  }
+
+  function chunk(type: string, data: Buffer): Buffer {
+    const len = Buffer.alloc(4)
+    len.writeUInt32BE(data.length, 0)
+    const typeBuf = Buffer.from(type, 'ascii')
+    const crcBuf = Buffer.alloc(4)
+    crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0)
+    return Buffer.concat([len, typeBuf, data, crcBuf])
+  }
+
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0)
+  ihdr.writeUInt32BE(h, 4)
+  ihdr[8] = 8 // bit depth
+  ihdr[9] = 6 // color type RGBA
+  ihdr[10] = 0
+  ihdr[11] = 0
+  ihdr[12] = 0
+
+  const idat = zlib.deflateSync(raw)
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+
+  return nativeImage.createFromBuffer(png)
+}
+
+function updateTrayMenu() {
+  if (!tray) return
+  const loginSettings = app.getLoginItemSettings()
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Dynasis — Dynamic System Island',
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: 'Buka Dashboard (Overview)',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.webContents.send('tray-command', 'open')
+      },
+    },
+    {
+      label: 'Mode Compact Pill',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.webContents.send('tray-command', 'compact')
+      },
+    },
+    {
+      label: 'Mode Stealth (Lipat ke Tepi Atas)',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.webContents.send('tray-command', 'stealth')
+      },
+    },
+    {
+      label: 'Pengaturan (Settings)',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.show()
+        mainWindow.webContents.send('tray-command', 'settings')
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Jalankan Otomatis Saat Windows Menyala',
+      type: 'checkbox',
+      checked: loginSettings.openAtLogin,
+      click: (menuItem) => {
+        app.setLoginItemSettings({
+          openAtLogin: menuItem.checked,
+          path: process.execPath,
+        })
+        updateTrayMenu()
+      },
+    },
+    {
+      label: 'Reset Posisi ke Tengah Atas',
+      click: () => {
+        resetWindowPosition()
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Keluar dari Dynasis (Quit)',
+      click: () => {
+        app.quit()
+      },
+    },
+  ])
+  tray.setContextMenu(contextMenu)
+}
+
+function setupSystemTray() {
+  if (tray) return
+  try {
+    tray = new Tray(createTrayIcon())
+    tray.setToolTip('Dynasis — Dynamic System Island (Alt+\\)')
+    updateTrayMenu()
+    tray.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.show()
+      mainWindow.webContents.send('tray-command', 'open')
+    })
+  } catch (err) {
+    console.error('Tray initialization error:', err)
+  }
+}
+
+function resetWindowPosition() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  userCustomX = null
+  userCustomY = null
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width: screenWidth } = primaryDisplay.workAreaSize
+  const x = Math.round((screenWidth - PANEL_W) / 2)
+  mainWindow.setBounds({ x, y: 0, width: PANEL_W, height: PANEL_H })
 }
 
 function createWindow() {
@@ -145,7 +355,7 @@ function createWindow() {
     hasShadow: false,
     focusable: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: getPreloadPath(),
       nodeIntegration: false,
       contextIsolation: true,
       backgroundThrottling: false,
@@ -164,7 +374,7 @@ function createWindow() {
   // When webContents is ready, send initial system state
   mainWindow.webContents.on('did-finish-load', async () => {
     try {
-      const mediaData = await fetchMediaState()
+      const mediaData = await fetchMediaState(true)
       if (mediaData && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('media-state-changed', mediaData)
       }
@@ -186,9 +396,7 @@ function createWindow() {
 
 /**
  * Coucou-inspired 60Hz Main-Process Hit-Test Polling:
- * Checks cursor coordinates against `islandRect + HIT_MARGIN` and `wakeStrip`.
- * Only the actual island pill intercepts mouse events; everything else is 100% click-through
- * so browser tabs around/below the island are never blocked!
+ * Centers the island hit-box relative to `bounds.width` so DPI scaling never shifts the hit area.
  */
 function startCursorPoll() {
   if (cursorPollInterval) clearInterval(cursorPollInterval)
@@ -202,19 +410,23 @@ function startCursorPoll() {
       const x = cursor.x - bounds.x
       const y = cursor.y - bounds.y
 
+      // Always center horizontally using bounds.width so DPI scaling never causes offset
+      const rectX = (bounds.width - islandRect.w) / 2
+      const rectY = islandRect.y
+
       const onIsland =
         islandRect.w > 0 &&
         islandRect.h > 0 &&
-        x >= islandRect.x - HIT_MARGIN &&
-        x <= islandRect.x + islandRect.w + HIT_MARGIN &&
-        y >= islandRect.y - HIT_MARGIN &&
-        y <= islandRect.y + islandRect.h + HIT_MARGIN
+        x >= rectX - HIT_MARGIN &&
+        x <= rectX + islandRect.w + HIT_MARGIN &&
+        y >= rectY - HIT_MARGIN &&
+        y <= rectY + islandRect.h + HIT_MARGIN
 
       const stripX0 = (bounds.width - WAKE_STRIP_W) / 2
       const onWakeStrip =
         x >= stripX0 &&
         x <= stripX0 + WAKE_STRIP_W &&
-        y >= -2 &&
+        y >= -4 &&
         y <= WAKE_STRIP_H
 
       const accept = onIsland || onWakeStrip
@@ -232,7 +444,6 @@ function startCursorPoll() {
         onWakeStrip !== lastCursor.onWakeStrip
 
       if (moved) {
-        // Only emit IPC when cursor is near the window or state transitions
         const nearWindow =
           x >= -40 && x <= bounds.width + 40 && y >= -20 && y <= bounds.height + 40
         const stateChanged =
@@ -260,7 +471,6 @@ ipcMain.on('set-island-rect', (_event, rect: { x: number; y: number; w: number; 
   }
 })
 
-// Legacy compatibility handler: converts width/height into centered islandRect
 ipcMain.on('set-island-size', (_event, { width, height }: { width: number; height: number }) => {
   islandRect = {
     x: (PANEL_W - width) / 2,
@@ -279,13 +489,7 @@ ipcMain.on('move-window-by', (_event, { deltaX, deltaY }: { deltaX: number; delt
 })
 
 ipcMain.on('reset-window-position', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  userCustomX = null
-  userCustomY = null
-  const primaryDisplay = screen.getPrimaryDisplay()
-  const { width: screenWidth } = primaryDisplay.workAreaSize
-  const x = Math.round((screenWidth - PANEL_W) / 2)
-  mainWindow.setBounds({ x, y: 0, width: PANEL_W, height: PANEL_H })
+  resetWindowPosition()
 })
 
 ipcMain.on('set-ignore-mouse-events', (event, ignore: boolean, options: { forward?: boolean } = {}) => {
@@ -306,7 +510,9 @@ function startClipboardWatcher() {
   try {
     const initial = clipboard.readImage()
     if (!initial.isEmpty()) lastClipboardImageHash = imageHash(initial)
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   clipboardPollInterval = setInterval(() => {
     try {
@@ -375,7 +581,7 @@ function startMediaWatcher() {
     }
   }
 
-  mediaPollInterval = setInterval(checkMedia, 1500)
+  mediaPollInterval = setInterval(checkMedia, 1200)
 }
 
 function startBatteryWatcher() {
@@ -404,7 +610,7 @@ function startBatteryWatcher() {
 
 // IPC Handlers
 ipcMain.handle('get-current-media', async () => {
-  const data = await fetchMediaState()
+  const data = await fetchMediaState(true)
   return data || { hasMedia: false }
 })
 
@@ -416,6 +622,19 @@ ipcMain.handle('get-current-battery', async () => {
     console.error('get-current-battery error:', err)
   }
   return { hasBattery: false }
+})
+
+ipcMain.handle('get-autostart', async () => {
+  return app.getLoginItemSettings().openAtLogin
+})
+
+ipcMain.handle('set-autostart', async (_event, enabled: boolean) => {
+  app.setLoginItemSettings({
+    openAtLogin: Boolean(enabled),
+    path: process.execPath,
+  })
+  updateTrayMenu()
+  return app.getLoginItemSettings().openAtLogin
 })
 
 ipcMain.on('start-file-drag', (event, filePath: string) => {
@@ -441,7 +660,7 @@ ipcMain.on('media-action', async (_event, action: string, value?: number) => {
       if (data && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('media-state-changed', data)
       }
-    }, 250)
+    }, 200)
   } catch (err) {
     console.error('Media action error:', err)
   }
@@ -475,7 +694,7 @@ ipcMain.handle('copy-image-to-clipboard', async (_event, dataUrl: string) => {
   }
 })
 
-ipcMain.on('dismiss-screenshot', (_event, _id: string) => {
+ipcMain.on('dismiss-screenshot', () => {
   // Optional cleanup
 })
 
@@ -488,6 +707,7 @@ ipcMain.on('app-close', () => {
 })
 
 app.whenReady().then(() => {
+  setupSystemTray()
   createWindow()
 
   // Global hotkey: Alt + \ toggles show / hide Dynasis
@@ -509,6 +729,10 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
 })
 
 app.on('window-all-closed', () => {

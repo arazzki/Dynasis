@@ -249,50 +249,146 @@ function createTrayIcon(): Electron.NativeImage {
   return nativeImage.createFromBuffer(createTrayPngBuffer())
 }
 
+function createBmpIcoBuffer(): Buffer {
+  const w = 48
+  const h = 48
+  const maskRowBytes = Math.ceil(w / 32) * 4
+  const xorBytes = w * h * 4
+  const andBytes = maskRowBytes * h
+
+  const bih = Buffer.alloc(40)
+  bih.writeUInt32LE(40, 0)
+  bih.writeInt32LE(w, 4)
+  bih.writeInt32LE(h * 2, 8)
+  bih.writeUInt16LE(1, 12)
+  bih.writeUInt16LE(32, 14)
+  bih.writeUInt32LE(0, 16)
+  bih.writeUInt32LE(xorBytes + andBytes, 20)
+
+  const xor = Buffer.alloc(xorBytes)
+  for (let y = 0; y < h; y++) {
+    const bmpRow = h - 1 - y
+    for (let x = 0; x < w; x++) {
+      const idx = (bmpRow * w + x) * 4
+      const dx = Math.abs(x - 23.5)
+      const dy = Math.abs(y - 23.5)
+      const dist = Math.hypot(Math.max(0, dx - 9.5), Math.max(0, dy - 9.5))
+      if (dist <= 13) {
+        const dotDist = Math.hypot(x - 23.5, y - 23.5)
+        if (dotDist <= 8) {
+          // BGRA Emerald (#10b981 -> R=16, G=185, B=129)
+          xor[idx] = 129
+          xor[idx + 1] = 185
+          xor[idx + 2] = 16
+          xor[idx + 3] = 255
+        } else {
+          // BGRA Obsidian (#121418 -> R=18, G=20, B=24)
+          xor[idx] = 24
+          xor[idx + 1] = 20
+          xor[idx + 2] = 18
+          xor[idx + 3] = 255
+        }
+      }
+    }
+  }
+
+  const andMask = Buffer.alloc(andBytes, 0)
+  const dib = Buffer.concat([bih, xor, andMask])
+  const header = Buffer.alloc(22)
+  header.writeUInt16LE(0, 0) // Reserved
+  header.writeUInt16LE(1, 2) // Type: 1 = ICO
+  header.writeUInt16LE(1, 4) // Image count: 1
+  header[6] = w
+  header[7] = h
+  header[8] = 0
+  header[9] = 0
+  header.writeUInt16LE(1, 10)
+  header.writeUInt16LE(32, 12)
+  header.writeUInt32LE(dib.length, 14)
+  header.writeUInt32LE(22, 18)
+
+  return Buffer.concat([header, dib])
+}
+
 function ensureDynasisIcoFile(): string {
   const exeDir = path.dirname(process.execPath)
   const primaryIco = path.join(exeDir, 'dynasis.ico')
   const fallbackIco = path.join(tempDir, 'dynasis.ico')
-
-  const writeIco = (targetPath: string) => {
-    const png = createTrayPngBuffer()
-    const header = Buffer.alloc(22)
-    header.writeUInt16LE(0, 0) // Reserved
-    header.writeUInt16LE(1, 2) // Type: 1 = ICO
-    header.writeUInt16LE(1, 4) // Image count: 1
-    header[6] = 32 // Width
-    header[7] = 32 // Height
-    header[8] = 0 // Color palette
-    header[9] = 0 // Reserved
-    header.writeUInt16LE(1, 10) // Color planes
-    header.writeUInt16LE(32, 12) // Bits per pixel
-    header.writeUInt32LE(png.length, 14) // Image byte size
-    header.writeUInt32LE(22, 18) // Offset (6 + 16)
-    fs.writeFileSync(targetPath, Buffer.concat([header, png]))
-  }
+  const icoBuf = createBmpIcoBuffer()
 
   try {
-    if (!fs.existsSync(primaryIco)) writeIco(primaryIco)
+    fs.writeFileSync(primaryIco, icoBuf)
     return primaryIco
   } catch {
     try {
-      if (!fs.existsSync(fallbackIco)) writeIco(fallbackIco)
+      fs.writeFileSync(fallbackIco, icoBuf)
     } catch {}
     return fallbackIco
   }
 }
 
-function ensureDynasisStartupCmd(): string {
+function ensureDynasisStartupLauncher(icoPath: string): string {
   const exeDir = path.dirname(process.execPath)
   const exeName = path.basename(process.execPath)
-  const cmdPath = path.join(exeDir, 'Dynasis-Start.cmd')
+  const launcherExe = path.join(exeDir, 'Dynasis-Startup.exe')
+  const oldCmd = path.join(exeDir, 'Dynasis-Start.cmd')
   try {
-    const content = `@echo off\r\nstart "" "%~dp0${exeName}"\r\n`
-    fs.writeFileSync(cmdPath, content, 'ascii')
-    return cmdPath
-  } catch {
-    return process.execPath
+    if (fs.existsSync(oldCmd)) fs.unlinkSync(oldCmd)
+  } catch {}
+
+  if (fs.existsSync(launcherExe)) {
+    return launcherExe
   }
+
+  const csPath = path.join(tempDir, 'DynasisStartupLauncher.cs')
+  const cscPath = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'
+  try {
+    const csSource = `using System;
+using System.IO;
+using System.Diagnostics;
+using System.Reflection;
+
+[assembly: AssemblyTitle("Dynasis")]
+[assembly: AssemblyDescription("Dynasis — Dynamic System Island")]
+[assembly: AssemblyCompany("arazzki")]
+[assembly: AssemblyProduct("Dynasis")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
+class DynasisStartup {
+    static void Main() {
+        try {
+            string dir = AppDomain.CurrentDomain.BaseDirectory;
+            string target = Path.Combine(dir, "${exeName.replace(/\\/g, '\\\\')}");
+            if (File.Exists(target)) {
+                ProcessStartInfo psi = new ProcessStartInfo(target);
+                psi.WorkingDirectory = dir;
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+            }
+        } catch {}
+    }
+}
+`
+    fs.writeFileSync(csPath, csSource, 'utf8')
+    execFileSync(
+      cscPath,
+      [
+        '/nologo',
+        '/target:winexe',
+        `/win32icon:${icoPath}`,
+        `/out:${launcherExe}`,
+        csPath,
+      ],
+      { windowsHide: true, stdio: 'ignore' }
+    )
+    if (fs.existsSync(launcherExe)) {
+      return launcherExe
+    }
+  } catch (err) {
+    console.error('Failed to compile Dynasis-Startup.exe:', err)
+  }
+  return process.execPath
 }
 
 const RUN_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
@@ -362,7 +458,7 @@ function registerFriendlyAppNameInWindowsShell(): void {
         '/t',
         'REG_SZ',
         '/d',
-        'Dynasis',
+        'arazzki',
         '/f',
       ],
       { windowsHide: true, stdio: 'ignore' }
@@ -398,12 +494,12 @@ function setAutoStartEnabled(enabled: boolean): boolean {
   if (enabled) {
     try {
       const icoPath = ensureDynasisIcoFile()
-      const cmdPath = ensureDynasisStartupCmd()
+      const launcherPath = ensureDynasisStartupLauncher(icoPath)
       shell.writeShortcutLink(lnkPath, 'create', {
-        target: cmdPath,
+        target: launcherPath,
         cwd: path.dirname(process.execPath),
         description: 'Dynasis — Dynamic System Island',
-        icon: icoPath,
+        icon: launcherPath,
         iconIndex: 0,
         appUserModelId: 'Dynasis',
       })

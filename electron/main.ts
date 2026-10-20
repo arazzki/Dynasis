@@ -48,7 +48,7 @@ function runPowerShellScript(scriptName: string, args: string[] = []): Promise<s
     execFile(
       'powershell.exe',
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args],
-      { windowsHide: true },
+      { windowsHide: true, maxBuffer: 10 * 1024 * 1024 },
       (error, stdout) => {
         if (error) {
           reject(error)
@@ -65,7 +65,7 @@ function createWindow() {
   const { width: screenWidth } = primaryDisplay.workAreaSize
 
   // Start with compact island dimensions
-  const initialWidth = 240
+  const initialWidth = 260
   const initialHeight = 58
   const x = Math.round((screenWidth - initialWidth) / 2)
   const y = 0
@@ -80,11 +80,15 @@ function createWindow() {
     backgroundColor: '#00000000',
     alwaysOnTop: true,
     skipTaskbar: true,
-    resizable: false,
+    resizable: true,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    thickFrame: false,
     hasShadow: false,
     focusable: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       backgroundThrottling: false,
@@ -174,7 +178,19 @@ ipcMain.on('set-ignore-mouse-events', (event, ignore: boolean, options: { forwar
   }
 })
 
+function imageHash(image: Electron.NativeImage): string {
+  const size = image.getSize()
+  const buffer = image.toBitmap()
+  return `${size.width}x${size.height}_${buffer.length}_${buffer.subarray(0, 64).toString('hex')}_${buffer.subarray(buffer.length >> 1, (buffer.length >> 1) + 64).toString('hex')}`
+}
+
 function startClipboardWatcher() {
+  // Ignore whatever image is already in the clipboard when Dynasis starts
+  try {
+    const initial = clipboard.readImage()
+    if (!initial.isEmpty()) lastClipboardImageHash = imageHash(initial)
+  } catch { /* ignore */ }
+
   clipboardPollInterval = setInterval(() => {
     try {
       const image = clipboard.readImage()
@@ -183,11 +199,11 @@ function startClipboardWatcher() {
       const size = image.getSize()
       if (size.width === 0 || size.height === 0) return
 
-      const buffer = image.toPNG()
-      const hash = `${size.width}x${size.height}_${buffer.length}_${buffer.slice(0, 32).toString('hex')}`
+      const hash = imageHash(image)
 
       if (hash !== lastClipboardImageHash) {
         lastClipboardImageHash = hash
+        const buffer = image.toPNG()
         const timestamp = Date.now()
         const fileName = `screenshot_${timestamp}.png`
         const filePath = path.join(tempDir, fileName)
@@ -314,6 +330,7 @@ ipcMain.handle('copy-image-to-clipboard', async (_event, dataUrl: string) => {
   try {
     const img = nativeImage.createFromDataURL(dataUrl)
     clipboard.writeImage(img)
+    lastClipboardImageHash = imageHash(clipboard.readImage())
     return true
   } catch (err) {
     console.error('Error copying image:', err)

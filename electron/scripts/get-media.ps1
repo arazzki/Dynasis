@@ -7,6 +7,11 @@ $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-O
     $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' 
 })[0]
 
+$asStreamMethod = ([System.IO.WindowsRuntimeStreamExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsStreamForRead' -and
+    $_.GetParameters().Count -eq 1
+})[0]
+
 function Await($WinRtTask, $ResultType) {
     $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
     $netTask = $asTask.Invoke($null, @($WinRtTask))
@@ -16,6 +21,9 @@ function Await($WinRtTask, $ResultType) {
 
 try {
     [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime] | Out-Null
+    [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime] | Out-Null
+    [Windows.Storage.Streams.IInputStream, Windows.Storage.Streams, ContentType = WindowsRuntime] | Out-Null
+
     $asyncOp = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
     $manager = Await $asyncOp ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
     $session = $manager.GetCurrentSession()
@@ -25,11 +33,27 @@ try {
         $mediaProps = Await $mediaPropsOp ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
         $playbackInfo = $session.GetPlaybackInfo()
 
+        $albumArt = $null
+        try {
+            if ($mediaProps.Thumbnail) {
+                $stream = Await ($mediaProps.Thumbnail.OpenReadAsync()) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+                $netStream = $asStreamMethod.Invoke($null, @($stream))
+                $ms = New-Object System.IO.MemoryStream
+                $netStream.CopyTo($ms)
+                $albumArt = "data:image/png;base64," + [Convert]::ToBase64String($ms.ToArray())
+                $ms.Dispose()
+                $netStream.Dispose()
+            }
+        } catch {
+            $albumArt = $null
+        }
+
         $result = @{
             hasMedia = $true
             title = $mediaProps.Title
             artist = $mediaProps.Artist
             albumTitle = $mediaProps.AlbumTitle
+            albumArt = $albumArt
             status = $playbackInfo.PlaybackStatus.ToString()
         }
         $result | ConvertTo-Json -Compress

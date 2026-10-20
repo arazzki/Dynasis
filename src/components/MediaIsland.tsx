@@ -1,5 +1,5 @@
 import React from 'react'
-import { Play, Pause, SkipBack, SkipForward, Music, X } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, Music, ChevronUp, LayoutGrid } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export interface MediaState {
@@ -17,6 +17,7 @@ interface MediaIslandProps {
   onNext: () => void
   onPrevious: () => void
   onCollapse?: () => void
+  onOpenMenu?: () => void
 }
 
 export const MediaIsland: React.FC<MediaIslandProps> = ({
@@ -25,6 +26,7 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
   onNext,
   onPrevious,
   onCollapse,
+  onOpenMenu,
 }) => {
   return (
     <motion.div
@@ -32,10 +34,11 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
       transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+      onClick={(e) => e.stopPropagation()}
       className="flex items-center justify-between w-full h-full px-4 text-white relative"
     >
       {/* Left: Album Artwork + Equalizer */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 min-w-0">
         <div className="relative w-12 h-12 rounded-xl overflow-hidden shadow-md bg-neutral-900 flex-shrink-0 flex items-center justify-center border border-white/10">
           {media.albumArt ? (
             <img
@@ -70,7 +73,7 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
         </div>
 
         {/* Title & Artist */}
-        <div className="flex flex-col max-w-[160px] overflow-hidden">
+        <div className="flex flex-col max-w-[145px] overflow-hidden">
           <span className="text-xs font-semibold truncate text-white tracking-wide">
             {media.title}
           </span>
@@ -80,14 +83,14 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
         </div>
       </div>
 
-      {/* Right: Controls & Equalizer Wave */}
-      <div className="flex items-center gap-2">
+      {/* Right: Controls */}
+      <div className="flex items-center gap-1.5 flex-shrink-0">
         <button
           onClick={(e) => {
             e.stopPropagation()
             onPrevious()
           }}
-          className="p-1.5 text-neutral-400 hover:text-white transition-colors rounded-full hover:bg-white/10 active:scale-95"
+          className="p-1.5 text-neutral-300 hover:text-white transition-colors rounded-full hover:bg-white/10 active:scale-95"
           title="Previous Track"
         >
           <SkipBack className="w-4 h-4 fill-current" />
@@ -113,11 +116,24 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
             e.stopPropagation()
             onNext()
           }}
-          className="p-1.5 text-neutral-400 hover:text-white transition-colors rounded-full hover:bg-white/10 active:scale-95"
+          className="p-1.5 text-neutral-300 hover:text-white transition-colors rounded-full hover:bg-white/10 active:scale-95"
           title="Next Track"
         >
           <SkipForward className="w-4 h-4 fill-current" />
         </button>
+
+        {onOpenMenu && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenMenu()
+            }}
+            className="p-1.5 text-neutral-400 hover:text-white transition-colors rounded-full hover:bg-white/10 ml-0.5"
+            title="Open Quick Controls"
+          >
+            <LayoutGrid className="w-3.5 h-3.5" />
+          </button>
+        )}
 
         {onCollapse && (
           <button
@@ -125,10 +141,10 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
               e.stopPropagation()
               onCollapse()
             }}
-            className="p-1 text-neutral-500 hover:text-neutral-300 transition-colors rounded-full hover:bg-white/10 ml-1"
+            className="p-1.5 text-neutral-400 hover:text-white transition-colors rounded-full hover:bg-white/10"
             title="Minimize to Pill"
           >
-            <X className="w-3.5 h-3.5" />
+            <ChevronUp className="w-4 h-4" />
           </button>
         )}
       </div>

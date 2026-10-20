@@ -35,15 +35,17 @@ interface DynasisPreferences {
 
 const DEFAULT_PREFS: DynasisPreferences = {
   openOnHover: false,
-  autoHideToEdge: false,
+  autoHideToEdge: true,
   autoCloseSeconds: 15,
   notchStyle: 'notch',
   showClock: true,
 }
 
+const PREFS_STORAGE_KEY = 'dynasis_prefs_v3'
+
 function loadPrefs(): DynasisPreferences {
   try {
-    const raw = localStorage.getItem('dynasis_prefs_v2')
+    const raw = localStorage.getItem(PREFS_STORAGE_KEY)
     if (raw) return { ...DEFAULT_PREFS, ...JSON.parse(raw) }
   } catch {
     /* ignore */
@@ -52,7 +54,8 @@ function loadPrefs(): DynasisPreferences {
 }
 
 export default function App() {
-  const [islandState, setIslandState] = useState<IslandState>('compact')
+  // Baseline state is 'hidden' (Stealth Edge 5px micro-bar) when cursor is outside Dynasis domain
+  const [islandState, setIslandState] = useState<IslandState>('hidden')
   const [view, setView] = useState<ExpandedView>('overview')
   const [isHovered, setIsHovered] = useState(false)
   const [isPinned, setIsPinned] = useState(false)
@@ -77,19 +80,41 @@ export default function App() {
 
   const dragStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
   const collapseDeadlineRef = useRef<number | null>(null)
-  const edgeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hiddenCooldownUntilRef = useRef<number>(0)
+
   const stateRef = useRef(islandState)
   stateRef.current = islandState
   const prefsRef = useRef(prefs)
   prefsRef.current = prefs
   const pinnedRef = useRef(isPinned)
   pinnedRef.current = isPinned
+  const dragOverRef = useRef(isDragOver)
+  dragOverRef.current = isDragOver
+
+  const enterStealthEdge = (cooldownMs = 300) => {
+    if (wakeTimerRef.current) {
+      clearTimeout(wakeTimerRef.current)
+      wakeTimerRef.current = null
+    }
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current)
+      leaveTimerRef.current = null
+    }
+    hiddenCooldownUntilRef.current = Date.now() + cooldownMs
+    stateRef.current = 'hidden'
+    setIsHovered(false)
+    setIslandState('hidden')
+    const viewportW = window.innerWidth > 0 ? window.innerWidth : 680
+    window.dynasis?.setIslandRect((viewportW - 200) / 2, 0, 200, 6)
+  }
 
   const updatePrefs = (patch: Partial<DynasisPreferences>) => {
     setPrefs((prev) => {
       const next = { ...prev, ...patch }
       try {
-        localStorage.setItem('dynasis_prefs_v2', JSON.stringify(next))
+        localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(next))
       } catch {
         /* ignore */
       }
@@ -118,9 +143,14 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
 
-  // Auto-collapse countdown loop (coucou #countdown bar)
+  // Auto-collapse countdown loop when Stealth Edge is disabled by user
   useEffect(() => {
-    if (islandState !== 'expanded' || isPinned || isHovered || prefs.autoCloseSeconds <= 0) {
+    if (
+      islandState !== 'expanded' ||
+      isPinned ||
+      isHovered ||
+      prefs.autoCloseSeconds <= 0
+    ) {
       collapseDeadlineRef.current = null
       setCountdownFraction(null)
       return
@@ -136,7 +166,11 @@ export default function App() {
       if (remaining <= 0) {
         collapseDeadlineRef.current = null
         setCountdownFraction(null)
-        setIslandState('compact')
+        if (prefsRef.current.autoHideToEdge) {
+          enterStealthEdge()
+        } else {
+          setIslandState('compact')
+        }
       } else {
         const showWindowMs = Math.min(10000, totalMs * 0.7)
         if (remaining < showWindowMs) {
@@ -150,40 +184,71 @@ export default function App() {
     return () => clearInterval(id)
   }, [islandState, isPinned, isHovered, prefs.autoCloseSeconds])
 
-  // Auto-hide compact island into top 5px edge when idle and autoHideToEdge is enabled
-  useEffect(() => {
-    if (edgeHideTimerRef.current) {
-      clearTimeout(edgeHideTimerRef.current)
-      edgeHideTimerRef.current = null
-    }
-    if (islandState === 'compact' && !isHovered && prefs.autoHideToEdge && !isDragOver) {
-      edgeHideTimerRef.current = setTimeout(() => {
-        setIslandState((cur) => (cur === 'compact' ? 'hidden' : cur))
-      }, 4500)
-    }
-    return () => {
-      if (edgeHideTimerRef.current) clearTimeout(edgeHideTimerRef.current)
-    }
-  }, [islandState, isHovered, prefs.autoHideToEdge, isDragOver])
-
-  // Subscribe to Electron 60Hz main-process cursor hit-test events (coucou pattern)
+  // Single Source of Truth: 60Hz Main-Process Cursor Hit-Test (coucou pattern)
   useEffect(() => {
     if (!window.dynasis?.onCursorMoved) return
     return window.dynasis.onCursorMoved(({ onIsland, onWakeStrip }) => {
-      if (stateRef.current === 'hidden' && (onWakeStrip || onIsland)) {
-        setIsHovered(true)
-        setIslandState(prefsRef.current.openOnHover ? 'expanded' : 'compact')
+      const curState = stateRef.current
+
+      // 1. When in Stealth Edge ('hidden'), ONLY wake when cursor dwells on top 6px wake strip
+      if (curState === 'hidden') {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current)
+          leaveTimerRef.current = null
+        }
+
+        if (onWakeStrip && Date.now() >= hiddenCooldownUntilRef.current) {
+          if (!wakeTimerRef.current) {
+            wakeTimerRef.current = setTimeout(() => {
+              wakeTimerRef.current = null
+              if (stateRef.current === 'hidden') {
+                setIsHovered(true)
+                setIslandState(prefsRef.current.openOnHover ? 'expanded' : 'compact')
+              }
+            }, 110)
+          }
+        } else {
+          if (wakeTimerRef.current) {
+            clearTimeout(wakeTimerRef.current)
+            wakeTimerRef.current = null
+          }
+          setIsHovered(false)
+        }
         return
       }
 
-      setIsHovered((prev) => {
-        if (onIsland && !prev) {
-          if (stateRef.current === 'compact' && prefsRef.current.openOnHover) {
-            setIslandState('expanded')
+      // 2. When awake ('compact', 'expanded', 'battery'), check if cursor is inside Dynasis domain
+      const inDomain = onIsland || onWakeStrip
+
+      if (inDomain) {
+        if (leaveTimerRef.current) {
+          clearTimeout(leaveTimerRef.current)
+          leaveTimerRef.current = null
+        }
+        setIsHovered(true)
+        if (curState === 'compact' && prefsRef.current.openOnHover) {
+          setIslandState('expanded')
+        }
+      } else {
+        setIsHovered(false)
+        // Cursor left Dynasis domain -> return to Stealth Edge baseline unless pinned or dragging
+        if (
+          prefsRef.current.autoHideToEdge &&
+          !pinnedRef.current &&
+          !dragOverRef.current &&
+          !dragStartRef.current
+        ) {
+          if (!leaveTimerRef.current) {
+            const delayMs = curState === 'expanded' ? 520 : 360
+            leaveTimerRef.current = setTimeout(() => {
+              leaveTimerRef.current = null
+              if (!pinnedRef.current && !dragOverRef.current && !dragStartRef.current) {
+                enterStealthEdge()
+              }
+            }, delayMs)
           }
         }
-        return onIsland
-      })
+      }
     })
   }, [])
 
@@ -191,6 +256,10 @@ export default function App() {
   useEffect(() => {
     if (!window.dynasis?.onTrayCommand) return
     return window.dynasis.onTrayCommand((cmd) => {
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current)
+        leaveTimerRef.current = null
+      }
       if (cmd === 'open') {
         setView('overview')
         setIslandState('expanded')
@@ -199,7 +268,7 @@ export default function App() {
         setIslandState('compact')
       } else if (cmd === 'stealth') {
         setIsPinned(false)
-        setIslandState('hidden')
+        enterStealthEdge()
       } else if (cmd === 'settings') {
         setView('settings')
         setIslandState('expanded')
@@ -207,12 +276,16 @@ export default function App() {
     })
   }, [])
 
-  // Keyboard shortcut: Escape folds expanded island back to compact
+  // Keyboard shortcut: Escape folds expanded island back to Stealth Edge (or compact)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && islandState === 'expanded') {
         setIsPinned(false)
-        setIslandState('compact')
+        if (prefsRef.current.autoHideToEdge) {
+          enterStealthEdge()
+        } else {
+          setIslandState('compact')
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -255,13 +328,17 @@ export default function App() {
   useEffect(() => {
     if (!window.dynasis?.onScreenshotCaptured) return
     return window.dynasis.onScreenshotCaptured((data) => {
+      if (leaveTimerRef.current) {
+        clearTimeout(leaveTimerRef.current)
+        leaveTimerRef.current = null
+      }
       setShelfItems((prev) => [data, ...prev])
       setView('shelf')
       setIslandState('expanded')
     })
   }, [])
 
-  // 2. Real-time Windows SMTC Media listener
+  // 2. Real-time Windows SMTC Media listener (silent update in background; never forces island out of Stealth Edge!)
   useEffect(() => {
     if (!window.dynasis?.onMediaStateChanged) return
     return window.dynasis.onMediaStateChanged((data) => {
@@ -278,9 +355,6 @@ export default function App() {
           updatedAt: Date.now(),
           appId: data.appId || prev.appId,
         }))
-        if (isPlaying && stateRef.current === 'hidden') {
-          setIslandState('compact')
-        }
       } else {
         setMedia((m) => ({ ...m, isPlaying: false }))
       }
@@ -302,8 +376,14 @@ export default function App() {
         if (prev !== null && prev !== data.isCharging && stateRef.current !== 'expanded') {
           setIslandState('battery')
           setTimeout(() => {
-            setIslandState((cur) => (cur === 'battery' ? 'compact' : cur))
-          }, 3200)
+            if (stateRef.current === 'battery') {
+              if (prefsRef.current.autoHideToEdge) {
+                enterStealthEdge()
+              } else {
+                setIslandState('compact')
+              }
+            }
+          }, 3000)
         }
       }
     })
@@ -484,8 +564,6 @@ export default function App() {
         isHovered={isHovered || isDragOver}
         notchStyle={prefs.notchStyle}
         countdownFraction={countdownFraction}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
         onClick={handleIslandClick}
         onContextMenu={handleContextMenu}
         onMouseDown={handleIslandMouseDown}
@@ -494,11 +572,11 @@ export default function App() {
         {islandState === 'hidden' && !isDragOver && (
           <div
             className="w-full h-full flex items-center justify-center cursor-pointer"
-            title="Arahkan kursor atau klik untuk membuka Dynasis"
+            title="Arahkan kursor ke tepi atas untuk membuka Dynasis"
           >
             <div
               className={`w-16 h-[2.5px] rounded-full transition-colors ${
-                media.isPlaying ? 'bg-emerald-400/80' : 'bg-white/35'
+                media.isPlaying ? 'bg-emerald-400/85' : 'bg-white/35'
               }`}
             />
           </div>
@@ -613,7 +691,7 @@ export default function App() {
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  setIslandState('hidden')
+                  enterStealthEdge(900)
                 }}
                 className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-white/15 text-[#9398a1] hover:text-white transition-opacity"
                 title="Sembunyikan ke tepi atas (Stealth Mode) agar tab browser bebas diklik"
@@ -712,7 +790,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setIsPinned(false)
-                    setIslandState('hidden')
+                    enterStealthEdge(900)
                   }}
                   className="p-1.5 rounded-full text-[#8e939c] hover:text-amber-300 hover:bg-white/[0.07] transition-colors"
                   title="Sembunyikan ke garis tepi atas (Stealth Mode) agar tab browser tidak terhalang"
@@ -838,7 +916,7 @@ export default function App() {
                       <button
                         onClick={() => {
                           setIsPinned(false)
-                          setIslandState('hidden')
+                          enterStealthEdge(900)
                         }}
                         className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-[10.5px] font-medium text-amber-300 transition-colors active:scale-95"
                         title="Sembunyikan ke tepi atas layar (5px)"

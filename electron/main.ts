@@ -23,9 +23,9 @@ const __dirname = path.dirname(__filename)
 // Fixed canvas size (coucou architecture: never clips spring animations, click-through outside islandRect)
 const PANEL_W = 680
 const PANEL_H = 280
-const HIT_MARGIN = 18
-const WAKE_STRIP_W = 250
-const WAKE_STRIP_H = 10
+const HIT_MARGIN = 12
+const WAKE_STRIP_W = 200
+const WAKE_STRIP_H = 6
 
 // Prevent Windows GPU/HTTP disk cache lock contention
 app.commandLine.appendSwitch('disable-http-cache')
@@ -60,14 +60,14 @@ let lastTrackKey = ''
 let cachedAlbumArt: string | null = null
 let lastBatterySignature = ''
 
-// Current active island bounding box in window-logical coordinates
+// Current active island bounding box in window-logical coordinates (starts in Stealth Edge hidden mode)
 let islandRect = {
-  x: (PANEL_W - 288) / 2,
+  x: (PANEL_W - 200) / 2,
   y: 0,
-  w: 288,
-  h: 38,
+  w: 200,
+  h: 6,
 }
-let isIgnoringMouse = false
+let isIgnoringMouse = true
 let lastCursor = { x: -9999, y: -9999, onIsland: false, onWakeStrip: false }
 
 let userCustomX: number | null = null
@@ -370,6 +370,7 @@ function createWindow() {
 
   // Keep on top of all windows including taskbar/fullscreen overlays
   mainWindow.setAlwaysOnTop(true, 'screen-saver')
+  mainWindow.setIgnoreMouseEvents(true, { forward: true })
 
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
@@ -416,24 +417,25 @@ function startCursorPoll() {
       const x = cursor.x - bounds.x
       const y = cursor.y - bounds.y
 
-      // Always center horizontally using bounds.width so DPI scaling never causes offset
-      const rectX = (bounds.width - islandRect.w) / 2
-      const rectY = islandRect.y
-
-      const onIsland =
-        islandRect.w > 0 &&
-        islandRect.h > 0 &&
-        x >= rectX - HIT_MARGIN &&
-        x <= rectX + islandRect.w + HIT_MARGIN &&
-        y >= rectY - HIT_MARGIN &&
-        y <= rectY + islandRect.h + HIT_MARGIN
-
+      // Strictly 6px high wake strip at the very top edge so browser tabs (y >= 8) are never triggered accidentally
       const stripX0 = (bounds.width - WAKE_STRIP_W) / 2
       const onWakeStrip =
         x >= stripX0 &&
         x <= stripX0 + WAKE_STRIP_W &&
         y >= -4 &&
         y <= WAKE_STRIP_H
+
+      // Only apply active island hit-box when island is awake (compact / expanded / battery, h > 10)
+      const isAwake = islandRect.h > 10
+      const rectX = (bounds.width - islandRect.w) / 2
+      const rectY = islandRect.y
+
+      const onIsland = isAwake
+        ? x >= rectX - HIT_MARGIN &&
+          x <= rectX + islandRect.w + HIT_MARGIN &&
+          y >= -4 &&
+          y <= rectY + islandRect.h + HIT_MARGIN
+        : onWakeStrip
 
       const accept = onIsland || onWakeStrip
       const shouldIgnore = !accept
@@ -443,17 +445,16 @@ function startCursorPoll() {
         mainWindow.setIgnoreMouseEvents(shouldIgnore, { forward: true })
       }
 
+      const stateChanged =
+        onIsland !== lastCursor.onIsland || onWakeStrip !== lastCursor.onWakeStrip
       const moved =
         Math.abs(x - lastCursor.x) >= 1 ||
         Math.abs(y - lastCursor.y) >= 1 ||
-        onIsland !== lastCursor.onIsland ||
-        onWakeStrip !== lastCursor.onWakeStrip
+        stateChanged
 
       if (moved) {
         const nearWindow =
           x >= -40 && x <= bounds.width + 40 && y >= -20 && y <= bounds.height + 40
-        const stateChanged =
-          onIsland !== lastCursor.onIsland || onWakeStrip !== lastCursor.onWakeStrip
 
         lastCursor = { x, y, onIsland, onWakeStrip }
         if (nearWindow || stateChanged) {

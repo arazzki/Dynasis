@@ -9,8 +9,8 @@ interface IslandProps {
   isHovered: boolean
   notchStyle?: NotchStyle
   countdownFraction?: number | null
-  onMouseEnter: () => void
-  onMouseLeave: () => void
+  onMouseEnter?: () => void
+  onMouseLeave?: () => void
   onClick: () => void
   onContextMenu?: (e: React.MouseEvent) => void
   onMouseDown?: (e: React.MouseEvent) => void
@@ -75,8 +75,8 @@ export const Island: React.FC<IslandProps> = ({
   useEffect(() => {
     const viewportW = window.innerWidth > 0 ? window.innerWidth : PANEL_W
     if (state === 'hidden') {
-      // Only the 240x8 top-center wake strip intercepts mouse
-      window.dynasis?.setIslandRect((viewportW - 240) / 2, 0, 240, 8)
+      // Strictly 200x6 top-center wake strip intercepts mouse in Stealth Edge mode
+      window.dynasis?.setIslandRect((viewportW - 200) / 2, 0, 200, 6)
     } else {
       window.dynasis?.setIslandRect(
         (viewportW - dim.width) / 2,

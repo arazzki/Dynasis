@@ -15,11 +15,23 @@ const HIT_MARGIN = 14
 const WAKE_STRIP_W = 240
 const WAKE_STRIP_H = 8
 
+// Prevent Windows GPU/HTTP disk cache lock contention (cache_util_win.cc / gpu_disk_cache.cc)
+app.commandLine.appendSwitch('disable-http-cache')
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
+app.commandLine.appendSwitch('disable-gpu-program-cache')
+
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
-  app.quit()
+  app.exit(0)
 }
+
+app.on('second-instance', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (!mainWindow.isVisible()) mainWindow.show()
+    mainWindow.setAlwaysOnTop(true, 'screen-saver')
+  }
+})
 
 let mainWindow: BrowserWindow | null = null
 let lastClipboardImageHash = ''

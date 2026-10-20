@@ -20,6 +20,7 @@ export interface DynasisAPI {
   onMediaStateChanged: (callback: (media: any) => void) => () => void
   onBatteryStateChanged: (callback: (battery: any) => void) => () => void
   onAppsStateChanged: (callback: (data: any) => void) => () => void
+  onWhatsAppNotification: (callback: (notif: { id: string; sender: string; message: string; source: string; timestamp: number }) => void) => () => void
   startFileDrag: (filePath: string) => void
   saveScreenshot: (dataUrl: string) => Promise<string | null>
   copyImageToClipboard: (dataUrl: string) => Promise<boolean>
@@ -78,6 +79,11 @@ const api: DynasisAPI = {
     const handler = (_: any, data: any) => callback(data)
     ipcRenderer.on('apps-state-changed', handler)
     return () => ipcRenderer.removeListener('apps-state-changed', handler)
+  },
+  onWhatsAppNotification: (callback) => {
+    const handler = (_: any, data: any) => callback(data)
+    ipcRenderer.on('wa-notification', handler)
+    return () => ipcRenderer.removeListener('wa-notification', handler)
   },
   getCurrentMedia: () => ipcRenderer.invoke('get-current-media'),
   getCurrentBattery: () => ipcRenderer.invoke('get-current-battery'),

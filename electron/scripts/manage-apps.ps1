@@ -82,10 +82,118 @@ public class Win32AppManager {
         }, IntPtr.Zero);
         return found;
     }
+    public static List<string> GetAllVisibleWindowTitles() {
+        var list = new List<string>();
+        EnumWindows((hWnd, lParam) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            int len = GetWindowTextLength(hWnd);
+            if (len <= 0) return true;
+            var sb = new StringBuilder(len + 1);
+            GetWindowText(hWnd, sb, sb.Capacity);
+            string title = sb.ToString().Trim();
+            if (!string.IsNullOrEmpty(title)) {
+                list.Add(title);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+
+    public static IntPtr FindWindowByTitlePattern(string keyword) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hWnd, lParam) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            int len = GetWindowTextLength(hWnd);
+            if (len <= 0) return true;
+            var sb = new StringBuilder(len + 1);
+            GetWindowText(hWnd, sb, sb.Capacity);
+            string title = sb.ToString().Trim();
+            if (title.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) {
+                found = hWnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
 }
 "@
 
 $script:winTitles = [Win32AppManager]::GetTopWindowTitles()
+
+function Get-LatestWhatsAppNotification {
+    try {
+        $null = [Windows.UI.Notifications.Management.UserNotificationListener, Windows.UI.Notifications, ContentType = WindowsRuntime]
+        $null = [Windows.UI.Notifications.NotificationKinds, Windows.UI.Notifications, ContentType = WindowsRuntime]
+        $null = [Windows.UI.Notifications.KnownNotificationBindings, Windows.UI.Notifications, ContentType = WindowsRuntime]
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction SilentlyContinue
+
+        $listener = [Windows.UI.Notifications.Management.UserNotificationListener]::Current
+        if ($listener.GetAccessStatus() -eq 'Allowed') {
+            $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+                $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+            })[0]
+            $op = $listener.GetNotificationsAsync([Windows.UI.Notifications.NotificationKinds]::Toast)
+            $resType = [System.Collections.Generic.IReadOnlyList[Windows.UI.Notifications.UserNotification]]
+            $task = $asTaskGeneric.MakeGenericMethod($resType).Invoke($null, @($op))
+            $task.Wait(1200) | Out-Null
+            if ($task.IsCompleted -and $task.Result) {
+                $notifs = $task.Result
+                for ($i = $notifs.Count - 1; $i -ge [Math]::Max(0, $notifs.Count - 15); $i--) {
+                    $n = $notifs[$i]
+                    $appName = ""
+                    try { $appName = $n.AppInfo.DisplayInfo.DisplayName } catch {}
+                    # Ignore IDE / system utility notifications
+                    if ($appName -match '(?i)^(Antigravity|Snipping Tool|Windows Security|PowerShell)$') {
+                        continue
+                    }
+                    $binding = $n.Notification.Visual.GetBinding([Windows.UI.Notifications.KnownNotificationBindings]::ToastGeneric)
+                    if ($binding) {
+                        $texts = @($binding.GetTextElements() | ForEach-Object { $_.Text } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        $joined = ($texts -join " ")
+                        $isWhatsAppApp = $appName -match '(?i)whatsapp'
+                        $isWhatsAppWeb = $joined -match '(?i)(whatsapp\.com|whatsapp\s*web|whatsapp)'
+                        if ($isWhatsAppApp -or $isWhatsAppWeb) {
+                            # Filter out domain text like "web.whatsapp.com" to extract Sender & Message
+                            $cleanTexts = @($texts | Where-Object { $_ -notmatch '(?i)^(https?://)?(web\.)?whatsapp\.com/?$' })
+                            $sender = if ($cleanTexts.Count -ge 1) { $cleanTexts[0] } else { "WhatsApp Web" }
+                            $msg = if ($cleanTexts.Count -ge 2) { ($cleanTexts[1..($cleanTexts.Count - 1)] -join " ") } elseif ($cleanTexts.Count -eq 1) { $cleanTexts[0] } else { "Pesan baru masuk" }
+                            if ($cleanTexts.Count -eq 1) { $sender = "WhatsApp" }
+                            return @{
+                                hasNotif = $true
+                                id = "toast_$($n.Id)"
+                                sender = $sender
+                                message = $msg
+                                source = if ($isWhatsAppApp) { "WhatsApp" } else { "WhatsApp Web" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    # Fallback: Check visible browser window titles for "(N) WhatsApp"
+    try {
+        $allTitles = [Win32AppManager]::GetAllVisibleWindowTitles()
+        foreach ($t in $allTitles) {
+            if ($t -match '\((\d+)\)\s*WhatsApp') {
+                $unreadCount = [int]$Matches[1]
+                if ($unreadCount -gt 0) {
+                    return @{
+                        hasNotif = $true
+                        id = "title_unread_$unreadCount"
+                        sender = "WhatsApp Web"
+                        message = "$unreadCount pesan belum dibaca di WhatsApp Web"
+                        source = "WhatsApp Web"
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    return $null
+}
 
 function Focus-ProcessWindow($procNames) {
     $procs = Get-Process -Name $procNames -ErrorAction SilentlyContinue
@@ -174,11 +282,14 @@ if ($Mode -eq "status") {
         }
     } catch {}
 
+    $waNotif = Get-LatestWhatsAppNotification
+
     $result = @{
         sebDetected = $false
         activeApp = $activeAppName
         activeTitle = $activeAppTitle
         apps = @($spotify, $discord, $browser, $vscode)
+        waNotif = $waNotif
     }
     $result | ConvertTo-Json -Compress -Depth 4
     exit 0
@@ -259,6 +370,25 @@ if ($Mode -eq "action") {
             }
         }
         '{"success": true, "action": "opened_discord"}'
+        exit 0
+    }
+
+    if ($t -eq "whatsapp") {
+        $waHwnd = [Win32AppManager]::FindWindowByTitlePattern("WhatsApp")
+        if ($waHwnd -ne [IntPtr]::Zero) {
+            if ([Win32AppManager]::IsIconic($waHwnd)) {
+                [Win32AppManager]::ShowWindowAsync($waHwnd, 9) | Out-Null
+            } else {
+                [Win32AppManager]::ShowWindowAsync($waHwnd, 5) | Out-Null
+            }
+            [Win32AppManager]::SetForegroundWindow($waHwnd) | Out-Null
+            '{"success": true, "action": "focused_whatsapp"}'
+            exit 0
+        }
+        if (-not (Focus-ProcessWindow @("WhatsApp", "chrome", "msedge", "brave", "firefox"))) {
+            Start-Process "https://web.whatsapp.com"
+        }
+        '{"success": true, "action": "opened_whatsapp"}'
         exit 0
     }
 

@@ -65,6 +65,13 @@ const api = {
       ipcRenderer.removeListener('apps-state-changed', handler)
     }
   },
+  onWhatsAppNotification: (callback) => {
+    const handler = (_, data) => callback(data)
+    ipcRenderer.on('wa-notification', handler)
+    return () => {
+      ipcRenderer.removeListener('wa-notification', handler)
+    }
+  },
   getCurrentMedia: () => {
     return ipcRenderer.invoke('get-current-media')
   },

@@ -32,6 +32,7 @@ interface ShelfIslandProps {
   onCopy: (item: ScreenshotItem) => void
   onSave: (item: ScreenshotItem) => void
   onSimulateScreenshot?: () => void
+  onOutboundDragStart?: () => void
 }
 
 export const ShelfIsland: React.FC<ShelfIslandProps> = ({
@@ -41,6 +42,7 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
   onCopy,
   onSave,
   onSimulateScreenshot,
+  onOutboundDragStart,
 }) => {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [copied, setCopied] = useState(false)
@@ -94,6 +96,7 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
   const handleDragStart = (e: React.DragEvent) => {
     if (currentItem.filePath && window.dynasis?.startFileDrag) {
       e.preventDefault()
+      onOutboundDragStart?.()
       window.dynasis.startFileDrag(currentItem.filePath)
     }
   }

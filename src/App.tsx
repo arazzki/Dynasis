@@ -38,6 +38,14 @@ export interface SyncedAppItem {
   windowTitle: string
 }
 
+export interface WhatsAppNotif {
+  id: string
+  sender: string
+  message: string
+  source: string
+  timestamp: number
+}
+
 interface DynasisPreferences {
   openOnHover: boolean
   autoHideToEdge: boolean
@@ -77,6 +85,7 @@ export default function App() {
   const [autoStart, setAutoStart] = useState(false)
 
   const [shelfItems, setShelfItems] = useState<ScreenshotItem[]>([])
+  const [activeWaNotif, setActiveWaNotif] = useState<WhatsAppNotif | null>(null)
   const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
   const [media, setMedia] = useState<MediaState>({
     title: 'No media playing',
@@ -102,6 +111,9 @@ export default function App() {
   const collapseDeadlineRef = useRef<number | null>(null)
   const wakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const waNotifTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dragOverWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const outboundDragUntilRef = useRef<number>(0)
   const hiddenCooldownUntilRef = useRef<number>(0)
 
   const stateRef = useRef(islandState)
@@ -110,8 +122,21 @@ export default function App() {
   prefsRef.current = prefs
   const pinnedRef = useRef(isPinned)
   pinnedRef.current = isPinned
+  const hoveredRef = useRef(isHovered)
+  hoveredRef.current = isHovered
   const dragOverRef = useRef(isDragOver)
   dragOverRef.current = isDragOver
+  const waNotifRef = useRef(activeWaNotif)
+  waNotifRef.current = activeWaNotif
+
+  const clearDragOver = () => {
+    if (dragOverWatchdogRef.current) {
+      clearTimeout(dragOverWatchdogRef.current)
+      dragOverWatchdogRef.current = null
+    }
+    dragOverRef.current = false
+    setIsDragOver(false)
+  }
 
   const enterStealthEdge = (cooldownMs = 300) => {
     if (wakeTimerRef.current) {
@@ -122,12 +147,46 @@ export default function App() {
       clearTimeout(leaveTimerRef.current)
       leaveTimerRef.current = null
     }
+    clearDragOver()
     hiddenCooldownUntilRef.current = Date.now() + cooldownMs
     stateRef.current = 'hidden'
     setIsHovered(false)
     setIslandState('hidden')
     const viewportW = window.innerWidth > 0 ? window.innerWidth : 680
     window.dynasis?.setIslandRect((viewportW - 200) / 2, 0, 200, 6)
+  }
+
+  const triggerWhatsAppNotif = (notif: WhatsAppNotif) => {
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current)
+      leaveTimerRef.current = null
+    }
+    if (waNotifTimerRef.current) {
+      clearTimeout(waNotifTimerRef.current)
+      waNotifTimerRef.current = null
+    }
+    waNotifRef.current = notif
+    setActiveWaNotif(notif)
+
+    // Automatically wake / widen UI to Compact Pill mode if not already expanded
+    if (stateRef.current !== 'expanded') {
+      stateRef.current = 'compact'
+      setIslandState('compact')
+    }
+
+    waNotifTimerRef.current = setTimeout(() => {
+      waNotifTimerRef.current = null
+      waNotifRef.current = null
+      setActiveWaNotif(null)
+      if (
+        stateRef.current === 'compact' &&
+        !hoveredRef.current &&
+        !pinnedRef.current &&
+        prefsRef.current.autoHideToEdge
+      ) {
+        enterStealthEdge()
+      }
+    }, 6500)
   }
 
   const updatePrefs = (patch: Partial<DynasisPreferences>) => {
@@ -246,23 +305,33 @@ export default function App() {
           leaveTimerRef.current = null
         }
         setIsHovered(true)
-        if (curState === 'compact' && prefsRef.current.openOnHover) {
+        if (curState === 'compact' && prefsRef.current.openOnHover && !waNotifRef.current) {
           setIslandState('expanded')
         }
       } else {
         setIsHovered(false)
-        // Cursor left Dynasis domain -> return to Stealth Edge baseline unless pinned or dragging
+        // If dragOver was stuck because OS OLE drop finished outside window, clear it immediately!
+        if (dragOverRef.current) {
+          clearDragOver()
+        }
+        // Cursor left Dynasis domain -> return to Stealth Edge baseline unless pinned or showing WA notif
         if (
           prefsRef.current.autoHideToEdge &&
           !pinnedRef.current &&
           !dragOverRef.current &&
-          !dragStartRef.current
+          !dragStartRef.current &&
+          !(curState === 'compact' && waNotifRef.current)
         ) {
           if (!leaveTimerRef.current) {
             const delayMs = curState === 'expanded' ? 520 : 360
             leaveTimerRef.current = setTimeout(() => {
               leaveTimerRef.current = null
-              if (!pinnedRef.current && !dragOverRef.current && !dragStartRef.current) {
+              if (
+                !pinnedRef.current &&
+                !dragOverRef.current &&
+                !dragStartRef.current &&
+                !(stateRef.current === 'compact' && waNotifRef.current)
+              ) {
                 enterStealthEdge()
               }
             }, delayMs)
@@ -299,7 +368,8 @@ export default function App() {
   // Keyboard shortcut: Escape folds expanded island back to Stealth Edge (or compact)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && islandState === 'expanded') {
+      if (e.key === 'Escape' && (islandState === 'expanded' || isDragOver)) {
+        clearDragOver()
         setIsPinned(false)
         if (prefsRef.current.autoHideToEdge) {
           enterStealthEdge()
@@ -310,7 +380,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [islandState])
+  }, [islandState, isDragOver])
 
   // Initial media, battery & autostart fetch
   useEffect(() => {
@@ -364,6 +434,16 @@ export default function App() {
     })
   }, [])
 
+  // 0B. Incoming WhatsApp Web Notification listener -> wakes & widens UI to Compact Pill
+  useEffect(() => {
+    if (!window.dynasis?.onWhatsAppNotification) return
+    return window.dynasis.onWhatsAppNotification((notif) => {
+      if (notif && notif.id) {
+        triggerWhatsAppNotif(notif)
+      }
+    })
+  }, [])
+
   const handleAppAction = async (target: string, command = 'open') => {
     await window.dynasis?.appAction?.(target, command)
   }
@@ -372,13 +452,27 @@ export default function App() {
   useEffect(() => {
     if (!window.dynasis?.onScreenshotCaptured) return
     return window.dynasis.onScreenshotCaptured((data) => {
+      clearDragOver()
       if (leaveTimerRef.current) {
         clearTimeout(leaveTimerRef.current)
         leaveTimerRef.current = null
       }
       setShelfItems((prev) => [data, ...prev].slice(0, 15))
       setView('shelf')
+      stateRef.current = 'expanded'
       setIslandState('expanded')
+
+      // Auto-retract after 4.5s if user doesn't hover or pin the island
+      leaveTimerRef.current = setTimeout(() => {
+        leaveTimerRef.current = null
+        if (!hoveredRef.current && !pinnedRef.current && !dragOverRef.current) {
+          if (prefsRef.current.autoHideToEdge) {
+            enterStealthEdge()
+          } else {
+            setIslandState('compact')
+          }
+        }
+      }, 4500)
     })
   }, [])
 
@@ -485,6 +579,13 @@ export default function App() {
 
   const handleIslandClick = () => {
     if (dragStartRef.current?.moved) return
+    if (islandState === 'compact' && activeWaNotif) {
+      setActiveWaNotif(null)
+      waNotifRef.current = null
+      handleAppAction('whatsapp', 'open')
+      enterStealthEdge(600)
+      return
+    }
     if (islandState === 'hidden') {
       setIslandState('compact')
     } else if (islandState === 'compact' || islandState === 'battery') {
@@ -503,27 +604,49 @@ export default function App() {
     }
   }
 
+  // Called when user drags a screenshot/file OUT of ShelfIsland so it never triggers inbound isDragOver
+  const handleOutboundDragStart = () => {
+    outboundDragUntilRef.current = Date.now() + 5000
+    clearDragOver()
+  }
+
   // External File Drag & Drop into Shelf
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    // Ignore outbound drags originating from Dynasis Shelf itself
+    if (Date.now() < outboundDragUntilRef.current) return
+    if (!e.dataTransfer?.types?.includes('Files')) return
+
     if (!isDragOver) {
+      dragOverRef.current = true
       setIsDragOver(true)
       setView('shelf')
       setIslandState('expanded')
     }
+
+    // Watchdog auto-reset: if OS drag ends outside window without firing onDragLeave/onDrop, clear after 650ms
+    if (dragOverWatchdogRef.current) {
+      clearTimeout(dragOverWatchdogRef.current)
+    }
+    dragOverWatchdogRef.current = setTimeout(() => {
+      dragOverWatchdogRef.current = null
+      clearDragOver()
+    }, 650)
   }
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setIsDragOver(false)
+    clearDragOver()
   }
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setIsDragOver(false)
+    clearDragOver()
+
+    if (Date.now() < outboundDragUntilRef.current) return
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const newItems: ScreenshotItem[] = []
@@ -623,6 +746,7 @@ export default function App() {
       <Island
         state={isDragOver ? 'expanded' : islandState}
         isHovered={isHovered || isDragOver}
+        hasNotification={Boolean(activeWaNotif)}
         notchStyle={prefs.notchStyle}
         countdownFraction={countdownFraction}
         onClick={handleIslandClick}
@@ -643,137 +767,195 @@ export default function App() {
           </div>
         )}
 
-        {/* ── 1. COMPACT ISLAND (288x34 Coucou-inspired Notch / Pill) ── */}
+        {/* ── 1. COMPACT ISLAND (Notch / Pill + Incoming WhatsApp Web Notification Mode) ── */}
         {islandState === 'compact' && !isDragOver && (
           <div
             className="w-full h-full flex items-center justify-between px-3 cursor-pointer group"
-            title="Klik untuk membuka Dynasis · Klik kanan untuk Pengaturan"
+            title={
+              activeWaNotif
+                ? 'Klik untuk membuka WhatsApp Web'
+                : 'Klik untuk membuka Dynasis · Klik kanan untuk Pengaturan'
+            }
           >
-            {/* Left: Album Art / Dot + Title - Artist/Band */}
-            <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
-              {media.albumArt ? (
-                <img
-                  src={media.albumArt}
-                  alt=""
-                  className={`w-5 h-5 rounded-full object-cover flex-shrink-0 border ${
-                    media.isPlaying ? 'border-emerald-400/60' : 'border-white/15'
-                  }`}
-                  draggable={false}
-                />
-              ) : (
-                <span
-                  className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                    media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-500/60'
-                  }`}
-                />
-              )}
-              <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate tracking-tight">
-                {hasActiveMedia ? (
-                  <>
-                    {media.title}
-                    {media.artist &&
-                      media.artist !== 'Unknown Artist' &&
-                      !media.artist.startsWith('Klik Play') && (
-                        <span className="font-normal text-[#a5aab4]">
-                          {' '}
-                          - {media.artist}
-                        </span>
-                      )}
-                  </>
-                ) : (
-                  'Dynasis'
-                )}
-              </span>
-            </div>
+            {activeWaNotif ? (
+              <>
+                {/* Incoming WhatsApp Web Notification Pill Content */}
+                <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
+                  <div className="w-5 h-5 rounded-full bg-emerald-500 text-[#051b11] flex items-center justify-center flex-shrink-0 shadow-sm">
+                    <MessageSquare className="w-3 h-3 fill-current" />
+                  </div>
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/35 text-[9.5px] font-bold text-emerald-300 flex-shrink-0">
+                      WA
+                    </span>
+                    <span className="text-[11.5px] font-bold text-emerald-300 truncate max-w-[110px] flex-shrink-0">
+                      {activeWaNotif.sender}:
+                    </span>
+                    <span className="text-[11.5px] font-medium text-[#f5f6f8] truncate flex-1">
+                      {activeWaNotif.message}
+                    </span>
+                  </div>
+                </div>
 
-            {/* Center: Optional Clock when no active media */}
-            {prefs.showClock && !hasActiveMedia && (
-              <span className="text-[11px] font-mono text-white/75 tabular-nums">
-                {clockText}
-              </span>
-            )}
-
-            {/* Right: Quick Play/Pause on Hover (coucou pill style) OR Equalizer + Shelf + Battery */}
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              {hasActiveMedia && isHovered ? (
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 flex-shrink-0">
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      handleMediaAction(media.isPlaying ? 'pause' : 'play')
+                      setActiveWaNotif(null)
+                      waNotifRef.current = null
+                      handleAppAction('whatsapp', 'open')
+                      enterStealthEdge(600)
                     }}
-                    className="w-5 h-5 rounded-full bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 flex items-center justify-center text-emerald-300 transition-colors"
-                    title={media.isPlaying ? 'Pause' : 'Play'}
+                    className="px-2 py-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-[#04130c] text-[10px] font-bold transition-colors"
+                    title="Buka & fokuskan WhatsApp Web"
                   >
-                    {media.isPlaying ? (
-                      <Pause className="w-2.5 h-2.5 fill-current" />
-                    ) : (
-                      <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
-                    )}
+                    Buka WA
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      handleMediaAction('next')
+                      setActiveWaNotif(null)
+                      waNotifRef.current = null
+                      if (prefsRef.current.autoHideToEdge && !isHovered) {
+                        enterStealthEdge(400)
+                      }
                     }}
-                    className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 flex items-center justify-center text-white transition-colors"
-                    title="Next Track"
+                    className="p-1 rounded-full hover:bg-white/15 text-[#9398a1] hover:text-white transition-colors"
+                    title="Tutup notifikasi"
                   >
-                    <SkipForward className="w-2.5 h-2.5 fill-current" />
+                    <EyeOff className="w-3 h-3" />
                   </button>
                 </div>
-              ) : (
-                media.isPlaying && (
-                  <div className="flex items-end gap-[2px] h-3">
-                    {[0, 1, 2, 3].map((i) => (
-                      <motion.span
-                        key={i}
-                        className="w-[2.2px] bg-emerald-400 rounded-full"
-                        animate={{ height: ['3px', '11px', '4px', '9px', '3px'] }}
-                        transition={{
-                          repeat: Infinity,
-                          duration: 0.65,
-                          delay: i * 0.14,
-                          ease: 'easeInOut',
-                        }}
-                      />
-                    ))}
-                  </div>
-                )
-              )}
+              </>
+            ) : (
+              <>
+                {/* Left: Album Art / Dot + Title - Artist/Band */}
+                <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
+                  {media.albumArt ? (
+                    <img
+                      src={media.albumArt}
+                      alt=""
+                      className={`w-5 h-5 rounded-full object-cover flex-shrink-0 border ${
+                        media.isPlaying ? 'border-emerald-400/60' : 'border-white/15'
+                      }`}
+                      draggable={false}
+                    />
+                  ) : (
+                    <span
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-500/60'
+                      }`}
+                    />
+                  )}
+                  <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate tracking-tight">
+                    {hasActiveMedia ? (
+                      <>
+                        {media.title}
+                        {media.artist &&
+                          media.artist !== 'Unknown Artist' &&
+                          !media.artist.startsWith('Klik Play') && (
+                            <span className="font-normal text-[#a5aab4]">
+                              {' '}
+                              - {media.artist}
+                            </span>
+                          )}
+                      </>
+                    ) : (
+                      'Dynasis'
+                    )}
+                  </span>
+                </div>
 
-              {shelfItems.length > 0 && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setView('shelf')
-                    setIslandState('expanded')
-                  }}
-                  className="px-1.5 py-0.5 bg-blue-500/25 hover:bg-blue-500/40 border border-blue-400/40 text-[10px] font-bold text-blue-300 rounded-full transition-colors"
-                  title={`${shelfItems.length} file di Shelf`}
-                >
-                  {shelfItems.length}
-                </button>
-              )}
-
-              <div className="flex items-center gap-0.5 text-[10.5px] font-mono text-[#9398a1] tabular-nums">
-                {battery.isCharging && (
-                  <Zap className="w-3 h-3 text-emerald-400 fill-current" />
+                {/* Center: Optional Clock when no active media */}
+                {prefs.showClock && !hasActiveMedia && (
+                  <span className="text-[11px] font-mono text-white/75 tabular-nums">
+                    {clockText}
+                  </span>
                 )}
-                <span>{battery.level}%</span>
-              </div>
 
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  enterStealthEdge(900)
-                }}
-                className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-white/15 text-[#9398a1] hover:text-white transition-opacity"
-                title="Sembunyikan ke tepi atas (Stealth Mode) agar tab browser bebas diklik"
-              >
-                <EyeOff className="w-3 h-3" />
-              </button>
-            </div>
+                {/* Right: Quick Play/Pause on Hover (coucou pill style) OR Equalizer + Shelf + Battery */}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {hasActiveMedia && isHovered ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleMediaAction(media.isPlaying ? 'pause' : 'play')
+                        }}
+                        className="w-5 h-5 rounded-full bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 flex items-center justify-center text-emerald-300 transition-colors"
+                        title={media.isPlaying ? 'Pause' : 'Play'}
+                      >
+                        {media.isPlaying ? (
+                          <Pause className="w-2.5 h-2.5 fill-current" />
+                        ) : (
+                          <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+                        )}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleMediaAction('next')
+                        }}
+                        className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 flex items-center justify-center text-white transition-colors"
+                        title="Next Track"
+                      >
+                        <SkipForward className="w-2.5 h-2.5 fill-current" />
+                      </button>
+                    </div>
+                  ) : (
+                    media.isPlaying && (
+                      <div className="flex items-end gap-[2px] h-3">
+                        {[0, 1, 2, 3].map((i) => (
+                          <motion.span
+                            key={i}
+                            className="w-[2.2px] bg-emerald-400 rounded-full"
+                            animate={{ height: ['3px', '11px', '4px', '9px', '3px'] }}
+                            transition={{
+                              repeat: Infinity,
+                              duration: 0.65,
+                              delay: i * 0.14,
+                              ease: 'easeInOut',
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )
+                  )}
+
+                  {shelfItems.length > 0 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setView('shelf')
+                        setIslandState('expanded')
+                      }}
+                      className="px-1.5 py-0.5 bg-blue-500/25 hover:bg-blue-500/40 border border-blue-400/40 text-[10px] font-bold text-blue-300 rounded-full transition-colors"
+                      title={`${shelfItems.length} file di Shelf`}
+                    >
+                      {shelfItems.length}
+                    </button>
+                  )}
+
+                  <div className="flex items-center gap-0.5 text-[10.5px] font-mono text-[#9398a1] tabular-nums">
+                    {battery.isCharging && (
+                      <Zap className="w-3 h-3 text-emerald-400 fill-current" />
+                    )}
+                    <span>{battery.level}%</span>
+                  </div>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      enterStealthEdge(900)
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-white/15 text-[#9398a1] hover:text-white transition-opacity"
+                    title="Sembunyikan ke tepi atas (Stealth Mode) agar tab browser bebas diklik"
+                  >
+                    <EyeOff className="w-3 h-3" />
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -916,10 +1098,17 @@ export default function App() {
             {/* ── Active View Body (142px height) ── */}
             <div className="relative flex-1 min-h-0 mt-1">
               {isDragOver && (
-                <div className="w-full h-full rounded-[18px] bg-emerald-500/10 border-2 border-dashed border-emerald-400/60 flex flex-col items-center justify-center gap-1.5 text-emerald-300">
+                <div
+                  onClick={() => clearDragOver()}
+                  className="w-full h-full rounded-[18px] bg-emerald-500/10 border-2 border-dashed border-emerald-400/60 flex flex-col items-center justify-center gap-1 text-emerald-300 cursor-pointer"
+                  title="Klik untuk menutup area drop"
+                >
                   <FolderPlus className="w-6 h-6 animate-bounce" />
                   <span className="text-xs font-semibold">
                     Lepaskan file di sini untuk masuk ke Dynasis Shelf
+                  </span>
+                  <span className="text-[10px] text-emerald-200/70">
+                    (Klik di sini jika ingin membatalkan)
                   </span>
                 </div>
               )}
@@ -1009,14 +1198,34 @@ export default function App() {
                       )
                     })()}
 
-                    <div className="flex items-center gap-1.5 w-full min-w-0">
+                    <div className="flex items-center gap-1 w-full min-w-0">
                       <button
                         onClick={simulateScreenshot}
-                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.05] text-[10px] font-medium text-[#f5f6f8] transition-colors active:scale-95 truncate"
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1 rounded-xl bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.05] text-[9.5px] font-medium text-[#f5f6f8] transition-colors active:scale-95 truncate"
                         title="Simulasikan tangkapan layar ke Shelf"
                       >
                         <Camera className="w-3 h-3 text-blue-400 flex-shrink-0" />
-                        <span className="truncate">Test Shelf</span>
+                        <span className="truncate">Shelf</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setIsPinned(false)
+                          stateRef.current = 'compact'
+                          setIslandState('compact')
+                          triggerWhatsAppNotif({
+                            id: `sim_wa_${Date.now()}`,
+                            sender: 'WhatsApp Web',
+                            message: 'Halo! Notif WA Web aktif di Compact Pill',
+                            source: 'WhatsApp Web',
+                            timestamp: Date.now(),
+                          })
+                        }}
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-[9.5px] font-medium text-emerald-300 transition-colors active:scale-95 truncate"
+                        title="Simulasikan notifikasi WhatsApp Web masuk ke mode Compact Pill"
+                      >
+                        <MessageSquare className="w-3 h-3 text-emerald-400 flex-shrink-0" />
+                        <span className="truncate">Tes WA</span>
                       </button>
 
                       <button
@@ -1024,7 +1233,7 @@ export default function App() {
                           setIsPinned(false)
                           enterStealthEdge(900)
                         }}
-                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-[10px] font-medium text-amber-300 transition-colors active:scale-95 truncate"
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-[9.5px] font-medium text-amber-300 transition-colors active:scale-95 truncate"
                         title="Sembunyikan ke tepi atas layar (5px)"
                       >
                         <EyeOff className="w-3 h-3 flex-shrink-0" />
@@ -1186,6 +1395,7 @@ export default function App() {
                   onCopy={handleCopyScreenshot}
                   onSave={handleSaveScreenshot}
                   onSimulateScreenshot={simulateScreenshot}
+                  onOutboundDragStart={handleOutboundDragStart}
                 />
               )}
 

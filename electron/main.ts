@@ -63,6 +63,8 @@ let lastTrackKey = ''
 let cachedAlbumArt: string | null = null
 let lastBatterySignature = ''
 let lastAppsSignature = ''
+let lastWaNotifId = ''
+let initializedWaNotif = false
 
 // Current active island bounding box in window-logical coordinates (starts in Stealth Edge hidden mode)
 let islandRect = {
@@ -666,6 +668,31 @@ function startAppsWatcher() {
           app.exit(0)
           return
         }
+        if (data && data.waNotif && data.waNotif.hasNotif && data.waNotif.id) {
+          if (!initializedWaNotif) {
+            // Seed existing toast notification on boot so historical Action Center toasts don't replay
+            initializedWaNotif = true
+            lastWaNotifId = String(data.waNotif.id)
+          } else if (String(data.waNotif.id) !== lastWaNotifId) {
+            lastWaNotifId = String(data.waNotif.id)
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('wa-notification', {
+                id: String(data.waNotif.id),
+                sender: data.waNotif.sender || 'WhatsApp Web',
+                message: data.waNotif.message || 'Pesan baru masuk',
+                source: data.waNotif.source || 'WhatsApp Web',
+                timestamp: Date.now(),
+              })
+            }
+          }
+        } else {
+          initializedWaNotif = true
+          // If unread badge cleared (user read the message), reset so next (1) WhatsApp triggers again
+          if (lastWaNotifId.startsWith('title_unread_')) {
+            lastWaNotifId = ''
+          }
+        }
+
         if (output !== lastAppsSignature) {
           lastAppsSignature = output
           if (mainWindow && !mainWindow.isDestroyed()) {

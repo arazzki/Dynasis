@@ -1,196 +1,279 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Music, Camera, Zap, X, Power, FolderPlus, EyeOff, Eye, Move, RotateCcw, LayoutGrid } from 'lucide-react'
-import { Island, IslandMode } from './components/Island'
+import {
+  Home,
+  Music,
+  FolderPlus,
+  Settings,
+  Pin,
+  EyeOff,
+  ChevronUp,
+  Zap,
+  BatteryCharging,
+  Move,
+  RotateCcw,
+  Power,
+  Camera,
+} from 'lucide-react'
+import { Island, IslandState, NotchStyle } from './components/Island'
 import { MediaIsland, MediaState } from './components/MediaIsland'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
 import { BatteryHUD, BatteryState } from './components/BatteryHUD'
 
-const windowBounds: Record<IslandMode, { width: number; height: number }> = {
-  idle: { width: 260, height: 58 },
-  battery: { width: 280, height: 68 },
-  media: { width: 470, height: 112 },
-  shelf: { width: 510, height: 122 },
-  menu: { width: 410, height: 168 },
+export type ExpandedView = 'overview' | 'media' | 'shelf' | 'settings'
+
+interface DynasisPreferences {
+  openOnHover: boolean
+  autoHideToEdge: boolean
+  autoCloseSeconds: number // 0 = never (pinned)
+  notchStyle: NotchStyle
+  showClock: boolean
+}
+
+const DEFAULT_PREFS: DynasisPreferences = {
+  openOnHover: false,
+  autoHideToEdge: false,
+  autoCloseSeconds: 15,
+  notchStyle: 'notch',
+  showClock: true,
+}
+
+function loadPrefs(): DynasisPreferences {
+  try {
+    const raw = localStorage.getItem('dynasis_prefs_v2')
+    if (raw) return { ...DEFAULT_PREFS, ...JSON.parse(raw) }
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_PREFS
 }
 
 export default function App() {
-  const [mode, setMode] = useState<IslandMode>('idle')
+  const [islandState, setIslandState] = useState<IslandState>('compact')
+  const [view, setView] = useState<ExpandedView>('overview')
   const [isHovered, setIsHovered] = useState(false)
+  const [isPinned, setIsPinned] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [autoHide, setAutoHide] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('dynasis_autohide') === 'true'
-    } catch {
-      return false
-    }
-  })
+  const [prefs, setPrefs] = useState<DynasisPreferences>(loadPrefs)
+
   const [shelfItems, setShelfItems] = useState<ScreenshotItem[]>([])
   const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
   const [media, setMedia] = useState<MediaState>({
     title: 'No media playing',
-    artist: 'Windows SMTC Standby',
+    artist: 'Play music in Spotify or browser',
     albumArt: undefined,
     isPlaying: false,
     duration: 0,
     position: 0,
+    updatedAt: Date.now(),
   })
 
-  const dragStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
-  const lastSizeRef = useRef<{ w: number; h: number }>({ w: 0, h: 0 })
-  const shrinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [clockText, setClockText] = useState('')
+  const [countdownFraction, setCountdownFraction] = useState<number | null>(null)
 
-  const toggleAutoHide = () => {
-    setAutoHide((prev) => {
-      const next = !prev
+  const dragStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
+  const collapseDeadlineRef = useRef<number | null>(null)
+  const edgeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const stateRef = useRef(islandState)
+  stateRef.current = islandState
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
+  const pinnedRef = useRef(isPinned)
+  pinnedRef.current = isPinned
+
+  const updatePrefs = (patch: Partial<DynasisPreferences>) => {
+    setPrefs((prev) => {
+      const next = { ...prev, ...patch }
       try {
-        localStorage.setItem('dynasis_autohide', String(next))
-      } catch { /* ignore */ }
+        localStorage.setItem('dynasis_prefs_v2', JSON.stringify(next))
+      } catch {
+        /* ignore */
+      }
       return next
     })
   }
 
-  // Synchronize window size with Island mode and auto-hide status
+  // Live clock for compact notch (coucou style)
   useEffect(() => {
-    const activeMode = isDragOver ? 'shelf' : mode
-    const bounds = windowBounds[activeMode]
-    const extraWidth = isHovered && mode === 'idle' ? 35 : 0
-
-    // When auto-hidden and not hovered, window height is 28px so browser tabs below stay clickable
-    const targetHeight = autoHide && !isHovered && mode === 'idle' && !isDragOver
-      ? 28
-      : bounds.height
-    const w = bounds.width + extraWidth
-    const h = targetHeight
-
-    if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current)
-    const last = lastSizeRef.current
-    const apply = () => {
-      lastSizeRef.current = { w, h }
-      window.dynasis?.setIslandSize(w, h)
+    const updateClock = () => {
+      const now = new Date()
+      const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      setClockText(time)
     }
-    if (w >= last.w && h >= last.h) {
-      apply() // growing: resize before animation starts
-    } else {
-      // shrinking: wait for spring animation to finish first
-      if (w > last.w || h > last.h) {
-        const grown = { w: Math.max(w, last.w), h: Math.max(h, last.h) }
-        lastSizeRef.current = grown
-        window.dynasis?.setIslandSize(grown.w, grown.h)
-      }
-      shrinkTimerRef.current = setTimeout(apply, 380)
-    }
-  }, [mode, isHovered, isDragOver, autoHide])
-
-  // Fetch initial media and battery on mount
-  useEffect(() => {
-    if (window.dynasis?.getCurrentMedia) {
-      window.dynasis.getCurrentMedia().then((data) => {
-        if (data && data.hasMedia) {
-          setMedia({
-            title: data.title || 'Unknown Title',
-            artist: data.artist || 'Unknown Artist',
-            albumArt: data.albumArt || undefined,
-            isPlaying: data.status === 'Playing',
-            duration: 0,
-            position: 0,
-          })
-        }
-      })
-    }
-
-    if (window.dynasis?.getCurrentBattery) {
-      window.dynasis.getCurrentBattery().then((data) => {
-        if (data && data.hasBattery) {
-          setBattery({
-            level: data.level,
-            isCharging: data.isCharging,
-          })
-        }
-      })
-    }
+    updateClock()
+    const id = setInterval(updateClock, 10000)
+    return () => clearInterval(id)
   }, [])
 
-  // 1. Listen to native screenshot capture from Electron
+  // Auto-collapse countdown loop (coucou #countdown bar)
   useEffect(() => {
-    if (window.dynasis?.onScreenshotCaptured) {
-      const cleanup = window.dynasis.onScreenshotCaptured((data) => {
-        setShelfItems((prev) => [data, ...prev])
-        setMode('shelf')
-      })
-      return cleanup
+    if (islandState !== 'expanded' || isPinned || isHovered || prefs.autoCloseSeconds <= 0) {
+      collapseDeadlineRef.current = null
+      setCountdownFraction(null)
+      return
     }
-  }, [])
 
-  // 2. Listen to real Windows media session updates
-  useEffect(() => {
-    if (window.dynasis?.onMediaStateChanged) {
-      const cleanup = window.dynasis.onMediaStateChanged((data) => {
-        if (data && data.hasMedia) {
-          const isPlaying = data.status === 'Playing'
-          setMedia((prev) => ({
-            title: data.title || 'Unknown Title',
-            artist: data.artist || 'Unknown Artist',
-            albumArt: data.albumArt || prev.albumArt,
-            isPlaying,
-            duration: 0,
-            position: 0,
-          }))
+    const totalMs = prefs.autoCloseSeconds * 1000
+    collapseDeadlineRef.current = Date.now() + totalMs
+
+    const id = setInterval(() => {
+      const due = collapseDeadlineRef.current
+      if (!due) return
+      const remaining = due - Date.now()
+      if (remaining <= 0) {
+        collapseDeadlineRef.current = null
+        setCountdownFraction(null)
+        setIslandState('compact')
+      } else {
+        const showWindowMs = Math.min(10000, totalMs * 0.7)
+        if (remaining < showWindowMs) {
+          setCountdownFraction(Math.max(0, Math.min(1, remaining / showWindowMs)))
         } else {
-          setMedia((m) => ({ ...m, isPlaying: false }))
+          setCountdownFraction(null)
         }
-      })
-      return cleanup
-    }
-  }, [])
+      }
+    }, 80)
 
-  // 3. Listen to real Windows battery & charger state updates
-  const prevChargingRef = useRef<boolean | null>(null)
+    return () => clearInterval(id)
+  }, [islandState, isPinned, isHovered, prefs.autoCloseSeconds])
+
+  // Auto-hide compact island into top 5px edge when idle and autoHideToEdge is enabled
   useEffect(() => {
-    if (window.dynasis?.onBatteryStateChanged) {
-      const cleanup = window.dynasis.onBatteryStateChanged((data) => {
-        if (data && data.hasBattery) {
-          setBattery({
-            level: data.level,
-            isCharging: data.isCharging,
-          })
-          const prev = prevChargingRef.current
-          prevChargingRef.current = data.isCharging
-          // Only pop the HUD when charger is plugged / unplugged, and only from idle
-          if (prev !== null && prev !== data.isCharging) {
-            setMode((current) => (current === 'idle' ? 'battery' : current))
-            setTimeout(() => {
-              setMode((current) => (current === 'battery' ? 'idle' : current))
-            }, 3500)
+    if (edgeHideTimerRef.current) {
+      clearTimeout(edgeHideTimerRef.current)
+      edgeHideTimerRef.current = null
+    }
+    if (islandState === 'compact' && !isHovered && prefs.autoHideToEdge && !isDragOver) {
+      edgeHideTimerRef.current = setTimeout(() => {
+        setIslandState((cur) => (cur === 'compact' ? 'hidden' : cur))
+      }, 4500)
+    }
+    return () => {
+      if (edgeHideTimerRef.current) clearTimeout(edgeHideTimerRef.current)
+    }
+  }, [islandState, isHovered, prefs.autoHideToEdge, isDragOver])
+
+  // Subscribe to Electron 60Hz main-process cursor hit-test events (coucou pattern)
+  useEffect(() => {
+    if (!window.dynasis?.onCursorMoved) return
+    return window.dynasis.onCursorMoved(({ onIsland, onWakeStrip }) => {
+      if (stateRef.current === 'hidden' && (onWakeStrip || onIsland)) {
+        setIsHovered(true)
+        setIslandState(prefsRef.current.openOnHover ? 'expanded' : 'compact')
+        return
+      }
+
+      setIsHovered((prev) => {
+        if (onIsland && !prev) {
+          if (stateRef.current === 'compact' && prefsRef.current.openOnHover) {
+            setIslandState('expanded')
           }
         }
+        return onIsland
       })
-      return cleanup
-    }
+    })
   }, [])
 
-  const handleIslandClick = () => {
-    if (dragStartRef.current?.moved) return
-    if (mode === 'idle') {
-      if (shelfItems.length > 0) {
-        setMode('shelf')
-      } else if (media.isPlaying || media.title !== 'No media playing') {
-        setMode('media')
-      } else {
-        setMode('menu')
+  // Keyboard shortcut: Escape folds expanded island back to compact
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && islandState === 'expanded') {
+        setIsPinned(false)
+        setIslandState('compact')
       }
-    } else if (mode === 'battery') {
-      setMode('idle')
     }
-  }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [islandState])
 
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setMode((current) => (current === 'menu' ? 'idle' : 'menu'))
-  }
+  // Initial media & battery fetch
+  useEffect(() => {
+    window.dynasis?.getCurrentMedia?.().then((data) => {
+      if (data && data.hasMedia) {
+        setMedia({
+          title: data.title || 'Unknown Title',
+          artist: data.artist || 'Unknown Artist',
+          albumTitle: data.albumTitle || '',
+          albumArt: data.albumArt || undefined,
+          isPlaying: data.status === 'Playing',
+          duration: Number(data.duration) || 0,
+          position: Number(data.position) || 0,
+          updatedAt: Date.now(),
+          appId: data.appId || '',
+        })
+      }
+    })
 
-  // Drag Island Window to Reposition (via drag handle or Alt+Drag anywhere)
+    window.dynasis?.getCurrentBattery?.().then((data) => {
+      if (data && data.hasBattery) {
+        setBattery({
+          level: data.level,
+          isCharging: data.isCharging,
+        })
+      }
+    })
+  }, [])
+
+  // 1. Native Screenshot Capture listener
+  useEffect(() => {
+    if (!window.dynasis?.onScreenshotCaptured) return
+    return window.dynasis.onScreenshotCaptured((data) => {
+      setShelfItems((prev) => [data, ...prev])
+      setView('shelf')
+      setIslandState('expanded')
+    })
+  }, [])
+
+  // 2. Real-time Windows SMTC Media listener
+  useEffect(() => {
+    if (!window.dynasis?.onMediaStateChanged) return
+    return window.dynasis.onMediaStateChanged((data) => {
+      if (data && data.hasMedia) {
+        const isPlaying = data.status === 'Playing'
+        setMedia((prev) => ({
+          title: data.title || 'Unknown Title',
+          artist: data.artist || 'Unknown Artist',
+          albumTitle: data.albumTitle || '',
+          albumArt: data.albumArt || prev.albumArt,
+          isPlaying,
+          duration: Number(data.duration) || 0,
+          position: Number(data.position) || 0,
+          updatedAt: Date.now(),
+          appId: data.appId || prev.appId,
+        }))
+        // Wake from hidden to compact when music starts playing (like coucou revealSilently)
+        if (isPlaying && stateRef.current === 'hidden') {
+          setIslandState('compact')
+        }
+      } else {
+        setMedia((m) => ({ ...m, isPlaying: false }))
+      }
+    })
+  }, [])
+
+  // 3. Real-time Battery & Charger listener
+  const prevChargingRef = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (!window.dynasis?.onBatteryStateChanged) return
+    return window.dynasis.onBatteryStateChanged((data) => {
+      if (data && data.hasBattery) {
+        setBattery({
+          level: data.level,
+          isCharging: data.isCharging,
+        })
+        const prev = prevChargingRef.current
+        prevChargingRef.current = data.isCharging
+        if (prev !== null && prev !== data.isCharging && stateRef.current !== 'expanded') {
+          setIslandState('battery')
+          setTimeout(() => {
+            setIslandState((cur) => (cur === 'battery' ? 'compact' : cur))
+          }, 3200)
+        }
+      }
+    })
+  }, [])
+
+  // Window Dragging (via Move button or Alt+Drag / Middle-Click)
   const startWindowDrag = (e: React.MouseEvent) => {
     dragStartRef.current = { x: e.screenX, y: e.screenY, moved: false }
 
@@ -222,7 +305,6 @@ export default function App() {
   }
 
   const handleIslandMouseDown = (e: React.MouseEvent) => {
-    // Allow Alt + Left Click or Middle Click anywhere on the island to drag it
     if (e.altKey || e.button === 1) {
       e.preventDefault()
       e.stopPropagation()
@@ -230,16 +312,35 @@ export default function App() {
     }
   }
 
-  const handleWindowDragStart = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    startWindowDrag(e)
+  const handleIslandClick = () => {
+    if (dragStartRef.current?.moved) return
+    if (islandState === 'hidden') {
+      setIslandState('compact')
+    } else if (islandState === 'compact' || islandState === 'battery') {
+      setIslandState('expanded')
+    }
   }
 
-  // Handle external file dropped onto Dynasis
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (islandState === 'expanded' && view === 'settings') {
+      setIslandState('compact')
+    } else {
+      setView('settings')
+      setIslandState('expanded')
+    }
+  }
+
+  // External File Drag & Drop into Shelf
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setIsDragOver(true)
+    if (!isDragOver) {
+      setIsDragOver(true)
+      setView('shelf')
+      setIslandState('expanded')
+    }
   }
 
   const handleDragLeave = (e: React.DragEvent) => {
@@ -259,7 +360,6 @@ export default function App() {
         const file = e.dataTransfer.files[i]
         const filePath = (file as any).path
         const objectUrl = URL.createObjectURL(file)
-
         newItems.push({
           id: `file_${Date.now()}_${i}`,
           filePath,
@@ -268,22 +368,37 @@ export default function App() {
           timestamp: Date.now(),
         })
       }
-
       setShelfItems((prev) => [...newItems, ...prev])
-      setMode('shelf')
+      setView('shelf')
+      setIslandState('expanded')
     }
   }
 
-  // Simulated screenshot for testing
   const simulateScreenshot = () => {
-    const mockScreenshot: ScreenshotItem = {
-      id: `mock_${Date.now()}`,
-      dataUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&auto=format&fit=crop&q=80',
+    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+      <defs>
+        <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0f172a"/>
+          <stop offset="50%" stop-color="#1e293b"/>
+          <stop offset="100%" stop-color="#047857"/>
+        </linearGradient>
+      </defs>
+      <rect width="640" height="360" fill="url(#g)"/>
+      <circle cx="520" cy="90" r="110" fill="#10b981" fill-opacity="0.18"/>
+      <text x="48" y="160" fill="#f8fafc" font-family="Segoe UI, sans-serif" font-size="32" font-weight="bold">Dynasis Capture</text>
+      <text x="48" y="205" fill="#94a3b8" font-family="Segoe UI, sans-serif" font-size="18">Ready to drag or copy to clipboard</text>
+    </svg>`
+    const dataUrl = `data:image/svg+xml;base64,${btoa(svgContent)}`
+    const sampleItem: ScreenshotItem = {
+      id: `sample_${Date.now()}`,
+      dataUrl,
+      name: `Capture_${new Date().toLocaleTimeString([], { hour12: false }).replace(/:/g, '')}.png`,
       timestamp: Date.now(),
       size: { width: 1920, height: 1080 },
     }
-    setShelfItems((prev) => [mockScreenshot, ...prev])
-    setMode('shelf')
+    setShelfItems((prev) => [sampleItem, ...prev])
+    setView('shelf')
+    setIslandState('expanded')
   }
 
   const handleCopyScreenshot = async (item: ScreenshotItem) => {
@@ -299,96 +414,109 @@ export default function App() {
   }
 
   const handleDismissItem = (id: string) => {
-    if (window.dynasis?.dismissScreenshot) {
-      window.dynasis.dismissScreenshot(id)
-    }
-    const remaining = shelfItems.filter((item) => item.id !== id)
-    setShelfItems(remaining)
-    if (remaining.length === 0) {
-      setMode('idle')
+    window.dynasis?.dismissScreenshot?.(id)
+    setShelfItems((prev) => prev.filter((item) => item.id !== id))
+  }
+
+  const handleMediaAction = (
+    action: 'play' | 'pause' | 'toggle' | 'next' | 'previous' | 'seek',
+    value?: number
+  ) => {
+    window.dynasis?.mediaAction?.(action, value)
+    if (action === 'play') {
+      setMedia((m) => ({ ...m, isPlaying: true, updatedAt: Date.now() }))
+    } else if (action === 'pause') {
+      setMedia((m) => ({ ...m, isPlaying: false }))
+    } else if (action === 'toggle') {
+      setMedia((m) => ({ ...m, isPlaying: !m.isPlaying, updatedAt: Date.now() }))
+    } else if (action === 'seek' && typeof value === 'number') {
+      setMedia((m) => ({ ...m, position: value, updatedAt: Date.now() }))
     }
   }
 
-  // Media Controls dispatch
-  const handleMediaAction = (action: 'play' | 'pause' | 'next' | 'previous') => {
-    if (window.dynasis?.mediaAction) {
-      window.dynasis.mediaAction(action)
-    }
-    if (action === 'play') setMedia((m) => ({ ...m, isPlaying: true }))
-    if (action === 'pause') setMedia((m) => ({ ...m, isPlaying: false }))
-  }
+  const hasActiveMedia = media.isPlaying || (media.title && media.title !== 'No media playing')
 
   return (
     <div
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="w-full h-full flex flex-col items-center justify-start overflow-hidden bg-transparent select-none"
+      className="w-full h-full flex flex-col items-center justify-start overflow-hidden bg-transparent select-none pointer-events-none"
     >
       <Island
-        mode={isDragOver ? 'shelf' : mode}
+        state={isDragOver ? 'expanded' : islandState}
         isHovered={isHovered || isDragOver}
-        isAutoHide={autoHide}
+        notchStyle={prefs.notchStyle}
+        countdownFraction={countdownFraction}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         onClick={handleIslandClick}
         onContextMenu={handleContextMenu}
         onMouseDown={handleIslandMouseDown}
       >
-        {/* Drag-in Feedback */}
-        {isDragOver && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex items-center justify-center gap-2 w-full h-full text-emerald-400 font-medium text-xs border-2 border-dashed border-emerald-400/50 rounded-full"
+        {/* ── 0. HIDDEN WAKE STRIP (5px top-edge micro-lip, 0% browser tab obstruction) ── */}
+        {islandState === 'hidden' && !isDragOver && (
+          <div
+            className="w-full h-full flex items-center justify-center cursor-pointer"
+            title="Arahkan kursor atau klik untuk membuka Dynasis"
           >
-            <FolderPlus className="w-5 h-5 animate-bounce" />
-            <span>Drop file to park on shelf</span>
-          </motion.div>
+            <div
+              className={`w-16 h-[2.5px] rounded-full transition-colors ${
+                media.isPlaying ? 'bg-emerald-400/80' : 'bg-white/35'
+              }`}
+            />
+          </div>
         )}
 
-        {/* 1. IDLE MODE */}
-        {!isDragOver && mode === 'idle' && (
-          <motion.div
-            key="idle"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex items-center justify-between w-full px-3 text-neutral-400 text-xs font-medium"
+        {/* ── 1. COMPACT ISLAND (288x34 Coucou-inspired Notch / Pill) ── */}
+        {islandState === 'compact' && !isDragOver && (
+          <div
+            className="w-full h-full flex items-center justify-between px-3 cursor-pointer group"
+            title="Klik untuk membuka Dynasis · Klik kanan untuk Pengaturan"
           >
-            {/* Left: Mini Album Art or Dot + Track Title */}
-            <div className="flex items-center gap-2 overflow-hidden max-w-[130px]">
+            {/* Left: Album Art / Dot + Title */}
+            <div className="flex items-center gap-2 min-w-0 max-w-[155px]">
               {media.albumArt ? (
                 <img
                   src={media.albumArt}
                   alt=""
-                  className="w-5 h-5 rounded-full object-cover flex-shrink-0 border border-white/15"
+                  className={`w-5 h-5 rounded-full object-cover flex-shrink-0 border ${
+                    media.isPlaying ? 'border-emerald-400/60' : 'border-white/15'
+                  }`}
+                  draggable={false}
                 />
               ) : (
                 <span
                   className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                    media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-500'
+                    media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-500/60'
                   }`}
                 />
               )}
-              <span className="text-[11px] font-semibold text-white truncate tracking-tight">
-                {media.isPlaying || media.title !== 'No media playing' ? media.title : 'DYNASIS'}
+              <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate tracking-tight">
+                {hasActiveMedia ? media.title : 'Dynasis'}
               </span>
             </div>
 
-            {/* Right: Waveform, Shelf Count Badge, and Quick Menu Button */}
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Center: Optional Clock when no long track title or on hover */}
+            {prefs.showClock && !hasActiveMedia && (
+              <span className="text-[11px] font-mono text-white/75 tabular-nums">
+                {clockText}
+              </span>
+            )}
+
+            {/* Right: Equalizer + Shelf Badge + Battery + Quick Hide button */}
+            <div className="flex items-center gap-2 flex-shrink-0">
               {media.isPlaying && (
-                <div className="flex items-end gap-[1.5px] h-3 mr-0.5">
-                  {[0, 1, 2].map((i) => (
+                <div className="flex items-end gap-[2px] h-3">
+                  {[0, 1, 2, 3].map((i) => (
                     <motion.span
                       key={i}
-                      className="w-[2.5px] bg-emerald-400 rounded-full"
-                      animate={{ height: ['3px', '12px', '4px'] }}
+                      className="w-[2.2px] bg-emerald-400 rounded-full"
+                      animate={{ height: ['3px', '11px', '4px', '9px', '3px'] }}
                       transition={{
                         repeat: Infinity,
-                        duration: 0.6,
-                        delay: i * 0.18,
+                        duration: 0.65,
+                        delay: i * 0.14,
                         ease: 'easeInOut',
                       }}
                     />
@@ -400,185 +528,426 @@ export default function App() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    setMode('shelf')
+                    setView('shelf')
+                    setIslandState('expanded')
                   }}
-                  className="px-1.5 py-0.5 bg-blue-500 hover:bg-blue-400 text-[9px] font-bold text-white rounded-full transition-colors"
-                  title={`${shelfItems.length} item(s) in shelf — click to open`}
+                  className="px-1.5 py-0.5 bg-blue-500/25 hover:bg-blue-500/40 border border-blue-400/40 text-[10px] font-bold text-blue-300 rounded-full transition-colors"
+                  title={`${shelfItems.length} file di Shelf`}
                 >
                   {shelfItems.length}
                 </button>
               )}
 
+              <div className="flex items-center gap-1 text-[10.5px] font-mono text-[#9398a1] tabular-nums">
+                {battery.isCharging && (
+                  <Zap className="w-3 h-3 text-emerald-400 fill-current" />
+                )}
+                <span>{battery.level}%</span>
+              </div>
+
+              {/* One-click Stealth Hide button on hover so user can immediately click browser tabs underneath */}
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  setMode('menu')
+                  setIslandState('hidden')
                 }}
-                className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
-                title="Open Quick Controls (or Right-Click)"
+                className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-white/15 text-[#9398a1] hover:text-white transition-opacity"
+                title="Sembunyikan ke tepi atas (Stealth Mode) agar tab browser bebas diklik"
               >
-                <LayoutGrid className="w-3 h-3" />
+                <EyeOff className="w-3 h-3" />
               </button>
             </div>
-          </motion.div>
+          </div>
         )}
 
-        {/* 2. MEDIA PLAYER MODE */}
-        {!isDragOver && mode === 'media' && (
-          <MediaIsland
-            key="media"
-            media={media}
-            onPlayPause={() => handleMediaAction(media.isPlaying ? 'pause' : 'play')}
-            onNext={() => handleMediaAction('next')}
-            onPrevious={() => handleMediaAction('previous')}
-            onCollapse={() => setMode('idle')}
-            onOpenMenu={() => setMode('menu')}
-          />
+        {/* ── 2. BATTERY HUD POPUP ── */}
+        {islandState === 'battery' && !isDragOver && (
+          <BatteryHUD battery={battery} />
         )}
 
-        {/* 3. SCREENSHOT & DROP SHELF MODE */}
-        {!isDragOver && mode === 'shelf' && shelfItems.length > 0 && (
-          <ShelfIsland
-            key="shelf"
-            items={shelfItems}
-            onDismiss={handleDismissItem}
-            onCopy={handleCopyScreenshot}
-            onSave={handleSaveScreenshot}
-            onCollapse={() => setMode('idle')}
-            onOpenMenu={() => setMode('menu')}
-          />
-        )}
-
-        {/* 4. BATTERY HUD MODE */}
-        {!isDragOver && mode === 'battery' && (
-          <BatteryHUD key="battery" battery={battery} />
-        )}
-
-        {/* 5. QUICK MENU / SWITCHER MODE */}
-        {!isDragOver && mode === 'menu' && (
-          <motion.div
-            key="menu"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
+        {/* ── 3. EXPANDED ISLAND DASHBOARD (580x192 Coucou Multi-Tab Architecture) ── */}
+        {(islandState === 'expanded' || isDragOver) && (
+          <div
             onClick={(e) => e.stopPropagation()}
-            className="flex flex-col w-full h-full p-3 text-white justify-between"
+            className="flex flex-col w-full h-full px-2.5 pt-1.5 pb-2.5 justify-between"
           >
-            {/* Header with Title + Drag Handle + Controls */}
-            <div className="flex items-center justify-between pb-2 border-b border-white/10 px-1">
-              <div
-                onMouseDown={handleWindowDragStart}
-                className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing text-neutral-300 hover:text-white"
-                title="Hold & drag to move Dynasis anywhere (or Alt+Drag)"
-              >
-                <Move className="w-3.5 h-3.5 text-neutral-400" />
-                <span className="text-[11px] font-semibold tracking-wide">Dynasis Controls</span>
-              </div>
-
+            {/* ── Coucou-style Header Bar (32px) ── */}
+            <div className="flex items-center justify-between h-8 px-1.5 flex-shrink-0">
+              {/* Left Navigation Tabs */}
               <div className="flex items-center gap-1">
-                {/* Auto-Hide Toggle */}
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    toggleAutoHide()
-                  }}
-                  className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors border ${
-                    autoHide
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                      : 'bg-white/10 text-neutral-300 border-white/10 hover:bg-white/20'
+                  onClick={() => setView('overview')}
+                  className={`flex items-center gap-1.5 px-2.5 h-6 rounded-full text-[11px] font-medium transition-colors ${
+                    view === 'overview'
+                      ? 'bg-[#1d1f23] text-[#f5f6f8]'
+                      : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.06]'
                   }`}
-                  title={autoHide ? 'Auto-Hide ON (Slides up when idle)' : 'Pinned (Click to enable Auto-Hide)'}
+                  title="Overview (Media + Quick Pills)"
                 >
-                  {autoHide ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                  <span>{autoHide ? 'Auto-Hide' : 'Pinned'}</span>
+                  <Home className="w-3 h-3" />
+                  <span>Overview</span>
                 </button>
 
-                {/* Reset Position */}
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    window.dynasis?.resetWindowPosition()
-                  }}
-                  className="p-1 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white"
-                  title="Reset Position to Top Center"
+                  onClick={() => setView('media')}
+                  className={`flex items-center gap-1.5 px-2.5 h-6 rounded-full text-[11px] font-medium transition-colors ${
+                    view === 'media'
+                      ? 'bg-[#1d1f23] text-[#f5f6f8]'
+                      : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.06]'
+                  }`}
+                  title="Media Player"
                 >
-                  <RotateCcw className="w-3 h-3" />
+                  <Music className="w-3 h-3 text-emerald-400" />
+                  <span>Media</span>
                 </button>
 
-                {/* Close Menu */}
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setMode('idle')
-                  }}
-                  className="p-1 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white ml-0.5"
-                  title="Minimize to Pill"
+                  onClick={() => setView('shelf')}
+                  className={`flex items-center gap-1.5 px-2.5 h-6 rounded-full text-[11px] font-medium transition-colors ${
+                    view === 'shelf'
+                      ? 'bg-[#1d1f23] text-[#f5f6f8]'
+                      : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.06]'
+                  }`}
+                  title="Screenshot & File Drop Shelf"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <FolderPlus className="w-3 h-3 text-blue-400" />
+                  <span>Shelf</span>
+                  {shelfItems.length > 0 && (
+                    <span className="px-1.5 py-0.2 bg-blue-500/25 text-blue-300 rounded-full text-[9.5px] font-bold">
+                      {shelfItems.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Right Header Actions */}
+              <div className="flex items-center gap-1">
+                {/* Drag Handle to reposition window */}
+                <button
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    startWindowDrag(e)
+                  }}
+                  className="p-1.5 rounded-full text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.07] cursor-grab active:cursor-grabbing"
+                  title="Tahan & geser untuk memindahkan posisi Dynasis"
+                >
+                  <Move className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Pin Open Toggle */}
+                <button
+                  onClick={() => setIsPinned((p) => !p)}
+                  className={`p-1.5 rounded-full transition-colors ${
+                    isPinned
+                      ? 'bg-emerald-500/20 text-emerald-400'
+                      : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.07]'
+                  }`}
+                  title={isPinned ? 'Pinned (Tetap terbuka)' : 'Pin agar tidak menutup otomatis'}
+                >
+                  <Pin className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Stealth Hide to 5px Top Edge */}
+                <button
+                  onClick={() => {
+                    setIsPinned(false)
+                    setIslandState('hidden')
+                  }}
+                  className="p-1.5 rounded-full text-[#8e939c] hover:text-amber-300 hover:bg-white/[0.07] transition-colors"
+                  title="Sembunyikan ke garis tepi atas (Stealth Mode) agar tab browser tidak terhalang"
+                >
+                  <EyeOff className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Settings Tab Button */}
+                <button
+                  onClick={() =>
+                    setView((v) => (v === 'settings' ? 'overview' : 'settings'))
+                  }
+                  className={`p-1.5 rounded-full transition-colors ${
+                    view === 'settings'
+                      ? 'bg-[#1d1f23] text-[#f5f6f8]'
+                      : 'text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.07]'
+                  }`}
+                  title="Pengaturan Dynasis"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Collapse to Compact Pill */}
+                <button
+                  onClick={() => {
+                    setIsPinned(false)
+                    setIslandState('compact')
+                  }}
+                  className="p-1.5 rounded-full text-[#8e939c] hover:text-[#f5f6f8] hover:bg-white/[0.07] transition-colors"
+                  title="Lipat ke Compact Pill (Esc)"
+                >
+                  <ChevronUp className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
 
-            {/* Quick Action Buttons Grid */}
-            <div className="grid grid-cols-4 gap-2 pt-2 pb-0.5">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (shelfItems.length > 0) {
-                    setMode('shelf')
-                  } else {
-                    simulateScreenshot()
+            {/* ── Active View Body (142px height) ── */}
+            <div className="relative flex-1 min-h-0 mt-1">
+              {/* Drag-Over Overlay */}
+              {isDragOver && (
+                <div className="w-full h-full rounded-[18px] bg-emerald-500/10 border-2 border-dashed border-emerald-400/60 flex flex-col items-center justify-center gap-1.5 text-emerald-300">
+                  <FolderPlus className="w-6 h-6 animate-bounce" />
+                  <span className="text-xs font-semibold">
+                    Lepaskan file di sini untuk masuk ke Dynasis Shelf
+                  </span>
+                </div>
+              )}
+
+              {/* VIEW 1: OVERVIEW (Coucou two-column layout: Left Media Card + Right Status Pills) */}
+              {!isDragOver && view === 'overview' && (
+                <div className="flex gap-2.5 w-full h-full">
+                  {/* Left Column (348px): Live Media Card */}
+                  <div className="w-[348px] flex-shrink-0 h-full">
+                    <MediaIsland
+                      media={media}
+                      compact
+                      onPlayPause={() =>
+                        handleMediaAction(media.isPlaying ? 'pause' : 'play')
+                      }
+                      onNext={() => handleMediaAction('next')}
+                      onPrevious={() => handleMediaAction('previous')}
+                      onSeek={(sec) => handleMediaAction('seek', sec)}
+                    />
+                  </div>
+
+                  {/* Right Column: Coucou-style Interactive Pills */}
+                  <div className="flex-1 h-full rounded-[18px] bg-[#141518] border border-white/[0.05] p-2 flex flex-col justify-between gap-1.5">
+                    {/* Pill 1: Drop Shelf */}
+                    <button
+                      onClick={() => setView('shelf')}
+                      className="group w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] hover:bg-blue-500/15 border border-white/[0.06] hover:border-blue-400/40 transition-all text-left"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-blue-500/15 flex items-center justify-center text-blue-400 flex-shrink-0">
+                          <FolderPlus className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-[11.5px] font-semibold text-[#f5f6f8] group-hover:text-blue-200 truncate">
+                            Drop Shelf
+                          </span>
+                          <span className="text-[10px] text-[#8e939c] truncate">
+                            {shelfItems.length > 0
+                              ? `${shelfItems.length} file siap di-drag`
+                              : 'Win+Shift+S / Drop file'}
+                          </span>
+                        </div>
+                      </div>
+                      <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-white/[0.06] text-[#9398a1]">
+                        {shelfItems.length}
+                      </span>
+                    </button>
+
+                    {/* Pill 2: Battery & System Power */}
+                    <div className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06]">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 flex-shrink-0">
+                          {battery.isCharging ? (
+                            <BatteryCharging className="w-3.5 h-3.5" />
+                          ) : (
+                            <Zap className="w-3.5 h-3.5" />
+                          )}
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate">
+                            {battery.isCharging ? 'Charging' : 'Battery Power'}
+                          </span>
+                          <div className="w-20 h-1.5 bg-white/10 rounded-full overflow-hidden mt-1">
+                            <div
+                              className="h-full bg-emerald-400 rounded-full"
+                              style={{ width: `${battery.level}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[11px] font-mono font-bold text-emerald-400 tabular-nums">
+                        {battery.level}%
+                      </span>
+                    </div>
+
+                    {/* Pill 3: Quick Stealth / Sample Capture */}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={simulateScreenshot}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.05] text-[10.5px] font-medium text-[#f5f6f8] transition-colors active:scale-95"
+                        title="Simulasikan tangkapan layar ke Shelf"
+                      >
+                        <Camera className="w-3 h-3 text-blue-400" />
+                        <span>Test Shelf</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setIsPinned(false)
+                          setIslandState('hidden')
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-[10.5px] font-medium text-amber-300 transition-colors active:scale-95"
+                        title="Sembunyikan ke tepi atas layar (5px)"
+                      >
+                        <EyeOff className="w-3 h-3" />
+                        <span>Stealth</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* VIEW 2: FULL MEDIA VIEW */}
+              {!isDragOver && view === 'media' && (
+                <MediaIsland
+                  media={media}
+                  onPlayPause={() =>
+                    handleMediaAction(media.isPlaying ? 'pause' : 'play')
                   }
-                }}
-                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition-all border border-white/5"
-                title={shelfItems.length > 0 ? 'Open Shelf' : 'Simulate Screenshot Capture'}
-              >
-                <Camera className="w-4 h-4 text-blue-400" />
-                <span className="text-[10px] text-neutral-300 font-medium">
-                  {shelfItems.length > 0 ? `Shelf (${shelfItems.length})` : 'Screenshot'}
-                </span>
-              </button>
+                  onNext={() => handleMediaAction('next')}
+                  onPrevious={() => handleMediaAction('previous')}
+                  onSeek={(sec) => handleMediaAction('seek', sec)}
+                />
+              )}
 
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setMode('media')
-                }}
-                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition-all border border-white/5"
-                title="Open Media Player"
-              >
-                <Music className="w-4 h-4 text-emerald-400" />
-                <span className="text-[10px] text-neutral-300 font-medium">Media</span>
-              </button>
+              {/* VIEW 3: SHELF & FILE DROP BOX VIEW */}
+              {!isDragOver && view === 'shelf' && (
+                <ShelfIsland
+                  items={shelfItems}
+                  onDismiss={handleDismissItem}
+                  onClearAll={() => setShelfItems([])}
+                  onCopy={handleCopyScreenshot}
+                  onSave={handleSaveScreenshot}
+                  onSimulateScreenshot={simulateScreenshot}
+                />
+              )}
 
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setMode('battery')
-                  setTimeout(() => setMode((m) => (m === 'battery' ? 'idle' : m)), 3500)
-                }}
-                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition-all border border-white/5"
-                title="Show Battery Status"
-              >
-                <Zap className="w-4 h-4 text-yellow-400" />
-                <span className="text-[10px] text-neutral-300 font-medium">
-                  {battery.level}%
-                </span>
-              </button>
+              {/* VIEW 4: COUCOU-STYLE SETTINGS VIEW */}
+              {!isDragOver && view === 'settings' && (
+                <div className="w-full h-full rounded-[18px] bg-[#141518] border border-white/[0.05] px-4 py-3 flex flex-col justify-between text-xs">
+                  {/* Row 1: Open on Hover + Auto-Hide to Edge */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => updatePrefs({ openOnHover: !prefs.openOnHover })}
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                    >
+                      <div className="flex flex-col text-left">
+                        <span className="text-[11.5px] font-semibold text-[#f5f6f8]">
+                          Open on Hover
+                        </span>
+                        <span className="text-[10px] text-[#8e939c]">
+                          {prefs.openOnHover ? 'Buka saat disentuh' : 'Klik untuk buka'}
+                        </span>
+                      </div>
+                      <div
+                        className={`w-8 h-4.5 rounded-full p-0.5 transition-colors flex items-center ${
+                          prefs.openOnHover ? 'bg-emerald-500 justify-end' : 'bg-white/15 justify-start'
+                        }`}
+                      >
+                        <div className="w-3.5 h-3.5 rounded-full bg-white shadow" />
+                      </div>
+                    </button>
 
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  window.dynasis?.closeApp()
-                }}
-                className="flex flex-col items-center justify-center gap-1 p-2 rounded-xl bg-red-500/10 hover:bg-red-500/25 active:scale-95 transition-all border border-red-500/20"
-                title="Quit Dynasis"
-              >
-                <Power className="w-4 h-4 text-red-400" />
-                <span className="text-[10px] text-red-400 font-medium">Exit</span>
-              </button>
+                    <button
+                      onClick={() =>
+                        updatePrefs({ autoHideToEdge: !prefs.autoHideToEdge })
+                      }
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e0f11] border border-white/[0.06] hover:border-white/15 transition-colors"
+                    >
+                      <div className="flex flex-col text-left">
+                        <span className="text-[11.5px] font-semibold text-[#f5f6f8]">
+                          Auto-Stealth Edge
+                        </span>
+                        <span className="text-[10px] text-[#8e939c]">
+                          {prefs.autoHideToEdge
+                            ? 'Bebas halangan tab browser'
+                            : 'Tetap tampil sebagai pill'}
+                        </span>
+                      </div>
+                      <div
+                        className={`w-8 h-4.5 rounded-full p-0.5 transition-colors flex items-center ${
+                          prefs.autoHideToEdge
+                            ? 'bg-emerald-500 justify-end'
+                            : 'bg-white/15 justify-start'
+                        }`}
+                      >
+                        <div className="w-3.5 h-3.5 rounded-full bg-white shadow" />
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Row 2: Auto-Close Timer + Notch Shape */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 bg-[#0e0f11] px-3 py-1.5 rounded-xl border border-white/[0.06]">
+                      <span className="text-[11px] text-[#9398a1]">Auto-close:</span>
+                      <div className="flex items-center gap-1 bg-white/[0.05] p-0.5 rounded-lg">
+                        {[10, 15, 30, 0].map((sec) => (
+                          <button
+                            key={sec}
+                            onClick={() => updatePrefs({ autoCloseSeconds: sec })}
+                            className={`px-2 py-0.5 rounded-md text-[10.5px] font-medium transition-colors ${
+                              prefs.autoCloseSeconds === sec
+                                ? 'bg-[#f5f6f8] text-[#0b0c0e]'
+                                : 'text-[#8e939c] hover:text-white'
+                            }`}
+                          >
+                            {sec === 0 ? 'Never' : `${sec}s`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-[#0e0f11] px-3 py-1.5 rounded-xl border border-white/[0.06]">
+                      <span className="text-[11px] text-[#9398a1]">Style:</span>
+                      <div className="flex items-center gap-1 bg-white/[0.05] p-0.5 rounded-lg">
+                        {(['notch', 'pill'] as NotchStyle[]).map((st) => (
+                          <button
+                            key={st}
+                            onClick={() => updatePrefs({ notchStyle: st })}
+                            className={`px-2 py-0.5 rounded-md text-[10.5px] font-medium capitalize transition-colors ${
+                              prefs.notchStyle === st
+                                ? 'bg-[#f5f6f8] text-[#0b0c0e]'
+                                : 'text-[#8e939c] hover:text-white'
+                            }`}
+                          >
+                            {st}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 3: Position Reset, Hotkey Hint, and Quit */}
+                  <div className="flex items-center justify-between pt-0.5">
+                    <span className="text-[10.5px] text-[#6b7079]">
+                      Shortcut: <kbd className="px-1.5 py-0.5 bg-white/10 rounded text-[#9398a1]">Alt + \</kbd> Show/Hide · <kbd className="px-1.5 py-0.5 bg-white/10 rounded text-[#9398a1]">Alt + Drag</kbd> Move
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => window.dynasis?.resetWindowPosition()}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.14] text-[10.5px] text-[#f5f6f8] transition-colors"
+                        title="Kembalikan posisi ke tengah atas layar"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Reset Pos</span>
+                      </button>
+
+                      <button
+                        onClick={() => window.dynasis?.closeApp()}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-500/15 hover:bg-red-500/30 border border-red-500/30 text-[10.5px] text-red-300 transition-colors"
+                        title="Keluar dari Dynasis"
+                      >
+                        <Power className="w-3 h-3" />
+                        <span>Quit</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </motion.div>
+          </div>
         )}
       </Island>
     </div>

@@ -1,5 +1,6 @@
 param (
-    [string]$Action = "toggle"
+    [string]$Action = "toggle",
+    [double]$Value = 0
 )
 
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -21,15 +22,41 @@ try {
     [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime] | Out-Null
     $asyncOp = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
     $manager = Await $asyncOp ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
-    $session = $manager.GetCurrentSession()
+
+    $session = $null
+    $allSessions = $manager.GetSessions()
+    if ($allSessions -and $allSessions.Count -gt 0) {
+        foreach ($s in $allSessions) {
+            try {
+                $info = $s.GetPlaybackInfo()
+                if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing') {
+                    $session = $s
+                    break
+                }
+            } catch {}
+        }
+        if (-not $session) {
+            $session = $manager.GetCurrentSession()
+        }
+        if (-not $session) {
+            $session = $allSessions[0]
+        }
+    } else {
+        $session = $manager.GetCurrentSession()
+    }
 
     if ($session) {
         switch ($Action.ToLower()) {
-            "play" { $session.TryPlayAsync() | Out-Null }
-            "pause" { $session.TryPauseAsync() | Out-Null }
-            "toggle" { $session.TryTogglePlayPauseAsync() | Out-Null }
-            "next" { $session.TrySkipNextAsync() | Out-Null }
-            "previous" { $session.TrySkipPreviousAsync() | Out-Null }
+            "play" { Await ($session.TryPlayAsync()) ([bool]) | Out-Null }
+            "pause" { Await ($session.TryPauseAsync()) ([bool]) | Out-Null }
+            "toggle" { Await ($session.TryTogglePlayPauseAsync()) ([bool]) | Out-Null }
+            "next" { Await ($session.TrySkipNextAsync()) ([bool]) | Out-Null }
+            "previous" { Await ($session.TrySkipPreviousAsync()) ([bool]) | Out-Null }
+            "seek" {
+                # Convert seconds to 100-nanosecond ticks
+                $ticks = [long]([math]::Round($Value * 10000000))
+                Await ($session.TryChangePlaybackPositionAsync($ticks)) ([bool]) | Out-Null
+            }
         }
         '{"success": true}'
     } else {

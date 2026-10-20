@@ -8,6 +8,13 @@ import { fileURLToPath } from 'url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+// Fixed canvas size (coucou architecture: never clips spring animations, click-through outside islandRect)
+const PANEL_W = 680
+const PANEL_H = 280
+const HIT_MARGIN = 14
+const WAKE_STRIP_W = 240
+const WAKE_STRIP_H = 8
+
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -19,9 +26,25 @@ let lastClipboardImageHash = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
 let mediaPollInterval: NodeJS.Timeout | null = null
 let batteryPollInterval: NodeJS.Timeout | null = null
+let cursorPollInterval: NodeJS.Timeout | null = null
 
 let lastMediaSignature = ''
+let lastTrackKey = ''
+let cachedAlbumArt: string | null = null
 let lastBatterySignature = ''
+
+// Current active island bounding box in window-logical coordinates
+let islandRect = {
+  x: (PANEL_W - 288) / 2,
+  y: 0,
+  w: 288,
+  h: 36,
+}
+let isIgnoringMouse = false
+let lastCursor = { x: -9999, y: -9999, onIsland: false, onWakeStrip: false }
+
+let userCustomX: number | null = null
+let userCustomY: number | null = null
 
 const tempDir = path.join(os.tmpdir(), 'dynasis-screenshots')
 if (!fs.existsSync(tempDir)) {
@@ -60,19 +83,41 @@ function runPowerShellScript(scriptName: string, args: string[] = []): Promise<s
   })
 }
 
+async function fetchMediaState(): Promise<any | null> {
+  try {
+    const args = lastTrackKey ? ['-LastTrackKey', lastTrackKey] : []
+    const output = await runPowerShellScript('get-media.ps1', args)
+    if (!output) return null
+    const data = JSON.parse(output)
+    if (data.hasMedia) {
+      if (data.albumArtCached && cachedAlbumArt) {
+        data.albumArt = cachedAlbumArt
+      } else if (data.albumArt) {
+        cachedAlbumArt = data.albumArt
+      }
+      if (data.trackKey) {
+        lastTrackKey = data.trackKey
+      }
+    } else {
+      lastTrackKey = ''
+      cachedAlbumArt = null
+    }
+    return data
+  } catch {
+    return null
+  }
+}
+
 function createWindow() {
   const primaryDisplay = screen.getPrimaryDisplay()
   const { width: screenWidth } = primaryDisplay.workAreaSize
 
-  // Start with compact island dimensions
-  const initialWidth = 260
-  const initialHeight = 58
-  const x = Math.round((screenWidth - initialWidth) / 2)
+  const x = Math.round((screenWidth - PANEL_W) / 2)
   const y = 0
 
   mainWindow = new BrowserWindow({
-    width: initialWidth,
-    height: initialHeight,
+    width: PANEL_W,
+    height: PANEL_H,
     x: x,
     y: y,
     frame: false,
@@ -80,7 +125,7 @@ function createWindow() {
     backgroundColor: '#00000000',
     alwaysOnTop: true,
     skipTaskbar: true,
-    resizable: true,
+    resizable: false,
     maximizable: false,
     minimizable: false,
     fullscreenable: false,
@@ -95,7 +140,7 @@ function createWindow() {
     },
   })
 
-  // Keep on top of other windows
+  // Keep on top of all windows including taskbar/fullscreen overlays
   mainWindow.setAlwaysOnTop(true, 'screen-saver')
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -107,9 +152,9 @@ function createWindow() {
   // When webContents is ready, send initial system state
   mainWindow.webContents.on('did-finish-load', async () => {
     try {
-      const mediaOut = await runPowerShellScript('get-media.ps1')
-      if (mediaOut && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('media-state-changed', JSON.parse(mediaOut))
+      const mediaData = await fetchMediaState()
+      if (mediaData && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('media-state-changed', mediaData)
       }
       const batteryOut = await runPowerShellScript('get-battery.ps1')
       if (batteryOut && mainWindow && !mainWindow.isDestroyed()) {
@@ -121,34 +166,96 @@ function createWindow() {
   })
 
   // Start background services
+  startCursorPoll()
   startClipboardWatcher()
   startMediaWatcher()
   startBatteryWatcher()
 }
 
-let userCustomX: number | null = null
-let userCustomY: number | null = null
+/**
+ * Coucou-inspired 60Hz Main-Process Hit-Test Polling:
+ * Checks cursor coordinates against `islandRect + HIT_MARGIN` and `wakeStrip`.
+ * Only the actual island pill intercepts mouse events; everything else is 100% click-through
+ * so browser tabs around/below the island are never blocked!
+ */
+function startCursorPoll() {
+  if (cursorPollInterval) clearInterval(cursorPollInterval)
 
-// Dynamic window resizing from renderer
-ipcMain.on('set-island-size', (_event, { width, height }: { width: number; height: number }) => {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  const primaryDisplay = screen.getPrimaryDisplay()
-  const { width: screenWidth } = primaryDisplay.workAreaSize
-  const targetW = Math.round(width)
-  const targetH = Math.round(height)
+  cursorPollInterval = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return
 
-  let x = Math.round((screenWidth - targetW) / 2)
-  let y = 0
+    try {
+      const cursor = screen.getCursorScreenPoint()
+      const bounds = mainWindow.getBounds()
+      const x = cursor.x - bounds.x
+      const y = cursor.y - bounds.y
 
-  if (userCustomX !== null && userCustomY !== null) {
-    const [currentX] = mainWindow.getPosition()
-    const [currentW] = mainWindow.getSize()
-    const centerX = currentX + currentW / 2
-    x = Math.round(centerX - targetW / 2)
-    y = userCustomY
+      const onIsland =
+        islandRect.w > 0 &&
+        islandRect.h > 0 &&
+        x >= islandRect.x - HIT_MARGIN &&
+        x <= islandRect.x + islandRect.w + HIT_MARGIN &&
+        y >= islandRect.y - HIT_MARGIN &&
+        y <= islandRect.y + islandRect.h + HIT_MARGIN
+
+      const stripX0 = (bounds.width - WAKE_STRIP_W) / 2
+      const onWakeStrip =
+        x >= stripX0 &&
+        x <= stripX0 + WAKE_STRIP_W &&
+        y >= -2 &&
+        y <= WAKE_STRIP_H
+
+      const accept = onIsland || onWakeStrip
+      const shouldIgnore = !accept
+
+      if (shouldIgnore !== isIgnoringMouse) {
+        isIgnoringMouse = shouldIgnore
+        mainWindow.setIgnoreMouseEvents(shouldIgnore, { forward: true })
+      }
+
+      const moved =
+        Math.abs(x - lastCursor.x) >= 1 ||
+        Math.abs(y - lastCursor.y) >= 1 ||
+        onIsland !== lastCursor.onIsland ||
+        onWakeStrip !== lastCursor.onWakeStrip
+
+      if (moved) {
+        // Only emit IPC when cursor is near the window or state transitions
+        const nearWindow =
+          x >= -40 && x <= bounds.width + 40 && y >= -20 && y <= bounds.height + 40
+        const stateChanged =
+          onIsland !== lastCursor.onIsland || onWakeStrip !== lastCursor.onWakeStrip
+
+        lastCursor = { x, y, onIsland, onWakeStrip }
+        if (nearWindow || stateChanged) {
+          mainWindow.webContents.send('cursor-moved', { x, y, onIsland, onWakeStrip })
+        }
+      }
+    } catch {
+      // Ignore transient screen query errors
+    }
+  }, 16)
+}
+
+// Update active hit-test rectangle from renderer (coucou setIslandRect pattern)
+ipcMain.on('set-island-rect', (_event, rect: { x: number; y: number; w: number; h: number }) => {
+  if (!rect || typeof rect.w !== 'number') return
+  islandRect = {
+    x: rect.x,
+    y: rect.y,
+    w: rect.w,
+    h: rect.h,
   }
+})
 
-  mainWindow.setBounds({ x, y, width: targetW, height: targetH })
+// Legacy compatibility handler: converts width/height into centered islandRect
+ipcMain.on('set-island-size', (_event, { width, height }: { width: number; height: number }) => {
+  islandRect = {
+    x: (PANEL_W - width) / 2,
+    y: 0,
+    w: width,
+    h: height,
+  }
 })
 
 ipcMain.on('move-window-by', (_event, { deltaX, deltaY }: { deltaX: number; deltaY: number }) => {
@@ -165,16 +272,15 @@ ipcMain.on('reset-window-position', () => {
   userCustomY = null
   const primaryDisplay = screen.getPrimaryDisplay()
   const { width: screenWidth } = primaryDisplay.workAreaSize
-  const [w, h] = mainWindow.getSize()
-  const x = Math.round((screenWidth - w) / 2)
-  mainWindow.setBounds({ x, y: 0, width: w, height: h })
+  const x = Math.round((screenWidth - PANEL_W) / 2)
+  mainWindow.setBounds({ x, y: 0, width: PANEL_W, height: PANEL_H })
 })
 
-// Optional click-through if explicit (default is false)
 ipcMain.on('set-ignore-mouse-events', (event, ignore: boolean, options: { forward?: boolean } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win && !win.isDestroyed()) {
-    win.setIgnoreMouseEvents(ignore, { forward: options.forward ?? false })
+    isIgnoringMouse = ignore
+    win.setIgnoreMouseEvents(ignore, { forward: options.forward ?? true })
   }
 })
 
@@ -185,7 +291,6 @@ function imageHash(image: Electron.NativeImage): string {
 }
 
 function startClipboardWatcher() {
-  // Ignore whatever image is already in the clipboard when Dynasis starts
   try {
     const initial = clipboard.readImage()
     if (!initial.isEmpty()) lastClipboardImageHash = imageHash(initial)
@@ -228,18 +333,33 @@ function startClipboardWatcher() {
 }
 
 function startMediaWatcher() {
+  let busy = false
   const checkMedia = async () => {
+    if (busy) return
+    busy = true
     try {
-      const output = await runPowerShellScript('get-media.ps1')
-      if (output && output !== lastMediaSignature) {
-        lastMediaSignature = output
-        const data = JSON.parse(output)
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('media-state-changed', data)
+      const data = await fetchMediaState()
+      if (data) {
+        const sig = JSON.stringify({
+          hasMedia: data.hasMedia,
+          title: data.title,
+          artist: data.artist,
+          status: data.status,
+          duration: data.duration,
+          position: Math.round(data.position || 0),
+          hasArt: Boolean(data.albumArt),
+        })
+        if (sig !== lastMediaSignature) {
+          lastMediaSignature = sig
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('media-state-changed', data)
+          }
         }
       }
     } catch {
       // Ignore transient errors
+    } finally {
+      busy = false
     }
   }
 
@@ -247,7 +367,10 @@ function startMediaWatcher() {
 }
 
 function startBatteryWatcher() {
+  let busy = false
   const checkBattery = async () => {
+    if (busy) return
+    busy = true
     try {
       const output = await runPowerShellScript('get-battery.ps1')
       if (output && output !== lastBatterySignature) {
@@ -259,6 +382,8 @@ function startBatteryWatcher() {
       }
     } catch {
       // Ignore transient errors
+    } finally {
+      busy = false
     }
   }
 
@@ -267,13 +392,8 @@ function startBatteryWatcher() {
 
 // IPC Handlers
 ipcMain.handle('get-current-media', async () => {
-  try {
-    const output = await runPowerShellScript('get-media.ps1')
-    if (output) return JSON.parse(output)
-  } catch (err) {
-    console.error('get-current-media error:', err)
-  }
-  return { hasMedia: false }
+  const data = await fetchMediaState()
+  return data || { hasMedia: false }
 })
 
 ipcMain.handle('get-current-battery', async () => {
@@ -288,23 +408,28 @@ ipcMain.handle('get-current-battery', async () => {
 
 ipcMain.on('start-file-drag', (event, filePath: string) => {
   if (fs.existsSync(filePath)) {
+    const ext = path.extname(filePath).toLowerCase()
+    const isImg = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)
+    const icon = isImg
+      ? nativeImage.createFromPath(filePath).resize({ width: 64, height: 64 })
+      : nativeImage.createEmpty()
     event.sender.startDrag({
       file: filePath,
-      icon: nativeImage.createFromPath(filePath).resize({ width: 64, height: 64 }),
+      icon,
     })
   }
 })
 
-ipcMain.on('media-action', async (_event, action: string) => {
+ipcMain.on('media-action', async (_event, action: string, value?: number) => {
   try {
-    await runPowerShellScript('control-media.ps1', [action])
-    // Re-check media status immediately after action
+    const args = value !== undefined ? [action, String(value)] : [action]
+    await runPowerShellScript('control-media.ps1', args)
     setTimeout(async () => {
-      const output = await runPowerShellScript('get-media.ps1')
-      if (output && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('media-state-changed', JSON.parse(output))
+      const data = await fetchMediaState()
+      if (data && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('media-state-changed', data)
       }
-    }, 200)
+    }, 250)
   } catch (err) {
     console.error('Media action error:', err)
   }
@@ -319,7 +444,7 @@ ipcMain.handle('save-screenshot', async (_event, dataUrl: string) => {
   })
 
   if (filePath) {
-    const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '')
+    const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '')
     fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'))
     return filePath
   }
@@ -375,6 +500,7 @@ app.on('will-quit', () => {
 })
 
 app.on('window-all-closed', () => {
+  if (cursorPollInterval) clearInterval(cursorPollInterval)
   if (clipboardPollInterval) clearInterval(clipboardPollInterval)
   if (mediaPollInterval) clearInterval(mediaPollInterval)
   if (batteryPollInterval) clearInterval(batteryPollInterval)

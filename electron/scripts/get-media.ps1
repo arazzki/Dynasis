@@ -1,3 +1,7 @@
+param (
+    [string]$LastTrackKey = ""
+)
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 
@@ -26,35 +30,86 @@ try {
 
     $asyncOp = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()
     $manager = Await $asyncOp ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
-    $session = $manager.GetCurrentSession()
+
+    # Prefer any session that is currently Playing across all sessions, fallback to GetCurrentSession()
+    $session = $null
+    $allSessions = $manager.GetSessions()
+    if ($allSessions -and $allSessions.Count -gt 0) {
+        foreach ($s in $allSessions) {
+            try {
+                $info = $s.GetPlaybackInfo()
+                if ($info -and $info.PlaybackStatus.ToString() -eq 'Playing') {
+                    $session = $s
+                    break
+                }
+            } catch {}
+        }
+        if (-not $session) {
+            $session = $manager.GetCurrentSession()
+        }
+        if (-not $session) {
+            $session = $allSessions[0]
+        }
+    } else {
+        $session = $manager.GetCurrentSession()
+    }
 
     if ($session) {
         $mediaPropsOp = $session.TryGetMediaPropertiesAsync()
         $mediaProps = Await $mediaPropsOp ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
         $playbackInfo = $session.GetPlaybackInfo()
 
-        $albumArt = $null
+        $duration = 0
+        $position = 0
         try {
-            if ($mediaProps.Thumbnail) {
-                $stream = Await ($mediaProps.Thumbnail.OpenReadAsync()) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
-                $netStream = $asStreamMethod.Invoke($null, @($stream))
-                $ms = New-Object System.IO.MemoryStream
-                $netStream.CopyTo($ms)
-                $albumArt = "data:image/png;base64," + [Convert]::ToBase64String($ms.ToArray())
-                $ms.Dispose()
-                $netStream.Dispose()
+            $timeline = $session.GetTimelineProperties()
+            if ($timeline) {
+                $durSec = ($timeline.EndTime - $timeline.StartTime).TotalSeconds
+                $posSec = ($timeline.Position - $timeline.StartTime).TotalSeconds
+                if ($durSec -gt 0) { $duration = [math]::Round($durSec, 1) }
+                if ($posSec -ge 0) { $position = [math]::Round($posSec, 1) }
             }
-        } catch {
-            $albumArt = $null
+        } catch {}
+
+        $trackKey = "$($mediaProps.Title)|$($mediaProps.Artist)"
+        $albumArt = $null
+        $albumArtCached = $false
+
+        if ($LastTrackKey -ne "" -and $LastTrackKey -eq $trackKey) {
+            $albumArtCached = $true
+        } else {
+            try {
+                if ($mediaProps.Thumbnail) {
+                    $stream = Await ($mediaProps.Thumbnail.OpenReadAsync()) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+                    $netStream = $asStreamMethod.Invoke($null, @($stream))
+                    $ms = New-Object System.IO.MemoryStream
+                    $netStream.CopyTo($ms)
+                    $albumArt = "data:image/png;base64," + [Convert]::ToBase64String($ms.ToArray())
+                    $ms.Dispose()
+                    $netStream.Dispose()
+                }
+            } catch {
+                $albumArt = $null
+            }
         }
+
+        $appId = ""
+        try {
+            $appId = $session.SourceAppUserModelId
+        } catch {}
 
         $result = @{
             hasMedia = $true
+            trackKey = $trackKey
             title = $mediaProps.Title
             artist = $mediaProps.Artist
             albumTitle = $mediaProps.AlbumTitle
             albumArt = $albumArt
+            albumArtCached = $albumArtCached
             status = $playbackInfo.PlaybackStatus.ToString()
+            duration = $duration
+            position = $position
+            appId = $appId
         }
         $result | ConvertTo-Json -Compress
     } else {

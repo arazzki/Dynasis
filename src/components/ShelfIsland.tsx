@@ -1,6 +1,16 @@
 import React, { useState } from 'react'
-import { Copy, Download, Trash2, Check, Move, ChevronLeft, ChevronRight, ChevronUp, LayoutGrid } from 'lucide-react'
-import { motion } from 'framer-motion'
+import {
+  Copy,
+  Download,
+  Trash2,
+  Check,
+  Move,
+  ChevronLeft,
+  ChevronRight,
+  FolderPlus,
+  Camera,
+  FileText,
+} from 'lucide-react'
 
 export interface ScreenshotItem {
   id: string
@@ -14,27 +24,61 @@ export interface ScreenshotItem {
 interface ShelfIslandProps {
   items: ScreenshotItem[]
   onDismiss: (id: string) => void
+  onClearAll?: () => void
   onCopy: (item: ScreenshotItem) => void
   onSave: (item: ScreenshotItem) => void
-  onCollapse?: () => void
-  onOpenMenu?: () => void
+  onSimulateScreenshot?: () => void
 }
 
 export const ShelfIsland: React.FC<ShelfIslandProps> = ({
   items,
   onDismiss,
+  onClearAll,
   onCopy,
   onSave,
-  onCollapse,
-  onOpenMenu,
+  onSimulateScreenshot,
 }) => {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [copied, setCopied] = useState(false)
 
+  if (items.length === 0) {
+    return (
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex items-center justify-between w-full h-full px-5 py-3 rounded-[18px] bg-[#141518] border border-dashed border-white/15 text-white overflow-hidden"
+      >
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-2xl bg-blue-500/10 border border-blue-500/25 flex items-center justify-center text-blue-400">
+            <FolderPlus className="w-5 h-5" />
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[12.5px] font-semibold text-[#f5f6f8]">
+              Drop Box & Screenshot Shelf
+            </span>
+            <span className="text-[11px] text-[#9398a1] mt-0.5">
+              Tekan <kbd className="px-1 py-0.5 text-[10px] bg-white/10 rounded">Win+Shift+S</kbd> atau tarik file ke sini untuk disimpan sementara.
+            </span>
+          </div>
+        </div>
+
+        {onSimulateScreenshot && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onSimulateScreenshot()
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-[11px] font-medium text-[#f5f6f8] border border-white/10 transition-all active:scale-95 flex-shrink-0"
+          >
+            <Camera className="w-3.5 h-3.5 text-blue-400" />
+            <span>Sample Capture</span>
+          </button>
+        )}
+      </div>
+    )
+  }
+
   const validIndex = Math.min(currentIndex, Math.max(0, items.length - 1))
   const currentItem = items[validIndex]
-
-  if (!currentItem) return null
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -60,86 +104,105 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
     setCurrentIndex((prev) => (prev < items.length - 1 ? prev + 1 : 0))
   }
 
+  const isImage =
+    !currentItem.name ||
+    /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(currentItem.name) ||
+    currentItem.dataUrl.startsWith('data:image') ||
+    currentItem.dataUrl.startsWith('http')
+
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
-      transition={{ type: 'spring', stiffness: 450, damping: 28 }}
+    <div
       onClick={(e) => e.stopPropagation()}
-      className="flex items-center justify-between w-full h-full px-4 text-white"
+      className="relative flex items-center justify-between w-full h-full px-4 py-3 rounded-[18px] bg-[#141518] border border-white/[0.05] text-white overflow-hidden"
     >
-      {/* Left: Thumbnail & Draggable Area */}
-      <div className="flex items-center gap-3 min-w-0">
+      {/* Ambient blue radial wash */}
+      <div
+        className="pointer-events-none absolute inset-0 opacity-20"
+        style={{
+          background:
+            'radial-gradient(240px 180px at 20% 110%, rgba(59, 130, 246, 0.4) 0%, transparent 70%)',
+        }}
+      />
+
+      {/* Left: Draggable Thumbnail + File/Screenshot Details */}
+      <div className="relative z-10 flex items-center gap-3.5 min-w-0">
         <div
-          draggable={!!currentItem.filePath}
+          draggable={Boolean(currentItem.filePath)}
           onDragStart={handleDragStart}
-          className="relative w-16 h-12 rounded-lg overflow-hidden bg-neutral-900 border border-white/20 shadow-md group cursor-grab active:cursor-grabbing flex-shrink-0"
-          title="Drag this screenshot to any app (WhatsApp, Discord, Figma, etc.)"
+          className="relative w-20 h-14 rounded-xl overflow-hidden bg-[#0e0f11] border border-white/15 shadow-md group cursor-grab active:cursor-grabbing flex-shrink-0 flex items-center justify-center"
+          title="Drag keluar ke WhatsApp, Discord, Explorer, atau aplikasi lain"
         >
-          <img
-            src={currentItem.dataUrl}
-            alt="Screenshot preview"
-            className="w-full h-full object-cover transition-transform group-hover:scale-105"
-          />
-          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+          {isImage ? (
+            <img
+              src={currentItem.dataUrl}
+              alt="Preview"
+              className="w-full h-full object-cover transition-transform group-hover:scale-105"
+            />
+          ) : (
+            <FileText className="w-6 h-6 text-blue-400" />
+          )}
+          <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
             <Move className="w-4 h-4 text-white drop-shadow" />
           </div>
         </div>
 
-        {/* Info & Shelf counter */}
         <div className="flex flex-col min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-            <span className="text-xs font-semibold text-white tracking-wide truncate">
-              {currentItem.name || (items.length > 1 ? `Shelf (${validIndex + 1}/${items.length})` : 'Screenshot Ready')}
+            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse flex-shrink-0" />
+            <span className="text-[12.5px] font-semibold text-[#f5f6f8] truncate max-w-[160px]">
+              {currentItem.name || `Screenshot #${items.length - validIndex}`}
             </span>
           </div>
-          <span className="text-[10px] text-neutral-400 flex items-center gap-1 mt-0.5">
-            <Move className="w-2.5 h-2.5 text-neutral-500 flex-shrink-0" />
-            Drag out or copy
+          <span className="text-[11px] text-[#9398a1] flex items-center gap-1 mt-0.5">
+            <Move className="w-3 h-3 text-blue-400 flex-shrink-0" />
+            <span>Tarik gambar keluar atau klik Copy</span>
           </span>
+          {currentItem.size && (
+            <span className="text-[10px] text-[#6b7079] mt-0.5 font-mono">
+              {currentItem.size.width} × {currentItem.size.height} px
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Center: Pagination controls if multiple items */}
+      {/* Center: Multi-item pagination */}
       {items.length > 1 && (
-        <div className="flex items-center gap-0.5 bg-white/5 rounded-full px-1 py-0.5 border border-white/10 flex-shrink-0">
+        <div className="relative z-10 flex items-center gap-1 bg-white/[0.06] rounded-full px-1.5 py-0.5 border border-white/10 flex-shrink-0">
           <button
             onClick={handlePrev}
             className="p-1 hover:bg-white/10 rounded-full text-neutral-300 hover:text-white"
-            title="Previous item"
+            title="Item sebelumnya"
           >
-            <ChevronLeft className="w-3 h-3" />
+            <ChevronLeft className="w-3.5 h-3.5" />
           </button>
-          <span className="text-[10px] font-mono text-neutral-300 px-0.5">
+          <span className="text-[10.5px] font-mono text-[#f5f6f8] px-1 tabular-nums">
             {validIndex + 1}/{items.length}
           </span>
           <button
             onClick={handleNext}
             className="p-1 hover:bg-white/10 rounded-full text-neutral-300 hover:text-white"
-            title="Next item"
+            title="Item berikutnya"
           >
-            <ChevronRight className="w-3 h-3" />
+            <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
-      {/* Right: Quick Action Buttons */}
-      <div className="flex items-center gap-1 flex-shrink-0">
+      {/* Right: Actions */}
+      <div className="relative z-10 flex items-center gap-1.5 flex-shrink-0">
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 px-2.5 py-1.5 bg-white/10 hover:bg-white/20 active:scale-95 transition-all text-xs rounded-full font-medium text-white border border-white/10"
-          title="Copy Image to Clipboard"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f5f6f8] text-[#0b0c0e] hover:bg-white active:scale-95 transition-all text-[11.5px] rounded-full font-semibold shadow"
+          title="Salin ke Clipboard"
         >
           {copied ? (
             <>
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-emerald-400">Copied</span>
+              <Check className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Tersalin</span>
             </>
           ) : (
             <>
-              <Copy className="w-3.5 h-3.5 text-neutral-300" />
+              <Copy className="w-3.5 h-3.5" />
               <span>Copy</span>
             </>
           )}
@@ -150,8 +213,8 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
             e.stopPropagation()
             onSave(currentItem)
           }}
-          className="p-1.5 bg-white/10 hover:bg-white/20 active:scale-95 transition-all rounded-full text-neutral-300 hover:text-white border border-white/10"
-          title="Save image to file"
+          className="p-2 bg-white/[0.08] hover:bg-white/[0.15] active:scale-95 transition-all rounded-full text-[#f5f6f8] border border-white/10"
+          title="Simpan sebagai file PNG"
         >
           <Download className="w-3.5 h-3.5" />
         </button>
@@ -161,38 +224,25 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
             e.stopPropagation()
             onDismiss(currentItem.id)
           }}
-          className="p-1.5 bg-white/10 hover:bg-red-500/30 hover:text-red-400 active:scale-95 transition-all rounded-full text-neutral-400 border border-white/10"
-          title="Remove item from shelf"
+          className="p-2 bg-white/[0.08] hover:bg-red-500/25 hover:text-red-400 active:scale-95 transition-all rounded-full text-[#9398a1] border border-white/10"
+          title="Hapus dari Shelf"
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
 
-        {onOpenMenu && (
+        {items.length > 1 && onClearAll && (
           <button
             onClick={(e) => {
               e.stopPropagation()
-              onOpenMenu()
+              onClearAll()
             }}
-            className="p-1.5 text-neutral-400 hover:text-white transition-colors rounded-full hover:bg-white/10"
-            title="Open Quick Controls"
+            className="px-2 py-1 text-[10px] text-[#9398a1] hover:text-red-400 transition-colors"
+            title="Bersihkan semua"
           >
-            <LayoutGrid className="w-3.5 h-3.5" />
-          </button>
-        )}
-
-        {onCollapse && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onCollapse()
-            }}
-            className="p-1.5 text-neutral-400 hover:text-white transition-colors rounded-full hover:bg-white/10"
-            title="Keep in Shelf & Minimize to Pill"
-          >
-            <ChevronUp className="w-4 h-4" />
+            Clear
           </button>
         )}
       </div>
-    </motion.div>
+    </div>
   )
 }

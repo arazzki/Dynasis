@@ -145,8 +145,8 @@ function Get-AppSummary($id, $name, $procNames) {
 }
 
 if ($Mode -eq "status") {
-    # Check if Safe Exam Browser (SEB) is starting or running
-    $sebProcs = Get-Process -Name "SafeExamBrowser*", "SebWindows*" -ErrorAction SilentlyContinue
+    # Check if Safe Exam Browser (SEB) GUI/Client is actually open (ignore 24/7 SafeExamBrowser.Service!)
+    $sebProcs = Get-Process -Name "SafeExamBrowser", "SafeExamBrowser.Client" -ErrorAction SilentlyContinue
     if ($sebProcs) {
         @{ sebDetected = $true; apps = @(); activeApp = "SafeExamBrowser"; activeTitle = "SEB Exam Mode" } | ConvertTo-Json -Compress
         exit 0

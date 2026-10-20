@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Music, Camera, Zap, X, Power } from 'lucide-react'
+import { Music, Camera, Zap, X, Power, FolderPlus } from 'lucide-react'
 import { Island, IslandMode } from './components/Island'
 import { MediaIsland, MediaState } from './components/MediaIsland'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
@@ -9,23 +9,64 @@ import { BatteryHUD, BatteryState } from './components/BatteryHUD'
 export default function App() {
   const [mode, setMode] = useState<IslandMode>('idle')
   const [isHovered, setIsHovered] = useState(false)
-  const [screenshot, setScreenshot] = useState<ScreenshotItem | null>(null)
-  const [battery] = useState<BatteryState>({ level: 92, isCharging: true })
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [shelfItems, setShelfItems] = useState<ScreenshotItem[]>([])
+  const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
   const [media, setMedia] = useState<MediaState>({
-    title: 'Starboy',
-    artist: 'The Weeknd, Daft Punk',
-    albumArt: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=120&auto=format&fit=crop&q=80',
-    isPlaying: true,
-    duration: 230,
-    position: 45,
+    title: 'No media playing',
+    artist: 'Windows SMTC Standby',
+    albumArt: undefined,
+    isPlaying: false,
+    duration: 0,
+    position: 0,
   })
 
-  // Listen to native Electron screenshot capture
+  // 1. Listen to native screenshot capture from Electron
   useEffect(() => {
     if (window.dynasis?.onScreenshotCaptured) {
       const cleanup = window.dynasis.onScreenshotCaptured((data) => {
-        setScreenshot(data)
+        setShelfItems((prev) => [data, ...prev])
         setMode('shelf')
+      })
+      return cleanup
+    }
+  }, [])
+
+  // 2. Listen to real Windows media session updates
+  useEffect(() => {
+    if (window.dynasis?.onMediaStateChanged) {
+      const cleanup = window.dynasis.onMediaStateChanged((data) => {
+        if (data && data.hasMedia) {
+          const isPlaying = data.status === 'Playing'
+          setMedia({
+            title: data.title || 'Unknown Title',
+            artist: data.artist || 'Unknown Artist',
+            albumArt: undefined,
+            isPlaying,
+            duration: 0,
+            position: 0,
+          })
+        }
+      })
+      return cleanup
+    }
+  }, [])
+
+  // 3. Listen to real Windows battery & charger state updates
+  useEffect(() => {
+    if (window.dynasis?.onBatteryStateChanged) {
+      const cleanup = window.dynasis.onBatteryStateChanged((data) => {
+        if (data && data.hasBattery) {
+          setBattery({
+            level: data.level,
+            isCharging: data.isCharging,
+          })
+          // If charger state was triggered, show battery pill for 3.5s
+          setMode('battery')
+          setTimeout(() => {
+            setMode((current) => (current === 'battery' ? 'idle' : current))
+          }, 3500)
+        }
       })
       return cleanup
     }
@@ -43,13 +84,53 @@ export default function App() {
 
   const handleIslandClick = () => {
     if (mode === 'idle') {
-      if (screenshot) {
+      if (shelfItems.length > 0) {
         setMode('shelf')
       } else if (media.isPlaying) {
         setMode('media')
       } else {
         setMode('menu')
       }
+    }
+  }
+
+  // Handle external file dropped onto Dynasis
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+    window.dynasis?.setIgnoreMouseEvents(false)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const newItems: ScreenshotItem[] = []
+      for (let i = 0; i < e.dataTransfer.files.length; i++) {
+        const file = e.dataTransfer.files[i]
+        const filePath = (file as any).path
+        const objectUrl = URL.createObjectURL(file)
+
+        newItems.push({
+          id: `file_${Date.now()}_${i}`,
+          filePath,
+          dataUrl: objectUrl,
+          name: file.name,
+          timestamp: Date.now(),
+        })
+      }
+
+      setShelfItems((prev) => [...newItems, ...prev])
+      setMode('shelf')
     }
   }
 
@@ -61,41 +142,71 @@ export default function App() {
       timestamp: Date.now(),
       size: { width: 1920, height: 1080 },
     }
-    setScreenshot(mockScreenshot)
+    setShelfItems((prev) => [mockScreenshot, ...prev])
     setMode('shelf')
   }
 
-  const handleCopyScreenshot = async () => {
-    if (screenshot?.dataUrl && window.dynasis?.copyImageToClipboard) {
-      await window.dynasis.copyImageToClipboard(screenshot.dataUrl)
+  const handleCopyScreenshot = async (item: ScreenshotItem) => {
+    if (item.dataUrl && window.dynasis?.copyImageToClipboard) {
+      await window.dynasis.copyImageToClipboard(item.dataUrl)
     }
   }
 
-  const handleSaveScreenshot = async () => {
-    if (screenshot?.dataUrl && window.dynasis?.saveScreenshot) {
-      await window.dynasis.saveScreenshot(screenshot.dataUrl)
+  const handleSaveScreenshot = async (item: ScreenshotItem) => {
+    if (item.dataUrl && window.dynasis?.saveScreenshot) {
+      await window.dynasis.saveScreenshot(item.dataUrl)
     }
   }
 
-  const handleDismissScreenshot = () => {
-    if (screenshot?.id && window.dynasis?.dismissScreenshot) {
-      window.dynasis.dismissScreenshot(screenshot.id)
+  const handleDismissItem = (id: string) => {
+    if (window.dynasis?.dismissScreenshot) {
+      window.dynasis.dismissScreenshot(id)
     }
-    setScreenshot(null)
-    setMode('idle')
+    const remaining = shelfItems.filter((item) => item.id !== id)
+    setShelfItems(remaining)
+    if (remaining.length === 0) {
+      setMode('idle')
+    }
+  }
+
+  // Media Controls dispatch
+  const handleMediaAction = (action: 'play' | 'pause' | 'next' | 'previous') => {
+    if (window.dynasis?.mediaAction) {
+      window.dynasis.mediaAction(action)
+    }
+    // Optimistic update
+    if (action === 'play') setMedia((m) => ({ ...m, isPlaying: true }))
+    if (action === 'pause') setMedia((m) => ({ ...m, isPlaying: false }))
   }
 
   return (
-    <div className="w-screen h-screen flex flex-col items-center justify-start overflow-hidden pointer-events-auto">
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="w-screen h-screen flex flex-col items-center justify-start overflow-hidden pointer-events-auto"
+    >
       <Island
-        mode={mode}
-        isHovered={isHovered}
+        mode={isDragOver ? 'shelf' : mode}
+        isHovered={isHovered || isDragOver}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
         onClick={handleIslandClick}
       >
+        {/* Drag-in Feedback */}
+        {isDragOver && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex items-center justify-center gap-2 w-full h-full text-emerald-400 font-medium text-xs border-2 border-dashed border-emerald-400/50 rounded-full"
+          >
+            <FolderPlus className="w-5 h-5 animate-bounce" />
+            <span>Drop file to park on shelf</span>
+          </motion.div>
+        )}
+
         {/* 1. IDLE MODE */}
-        {mode === 'idle' && (
+        {!isDragOver && mode === 'idle' && (
           <motion.div
             key="idle"
             initial={{ opacity: 0 }}
@@ -130,42 +241,47 @@ export default function App() {
                   ))}
                 </div>
               )}
-              {screenshot && (
-                <span className="w-2 h-2 rounded-full bg-blue-400" title="Screenshot available" />
+              {shelfItems.length > 0 && (
+                <span
+                  className="px-1.5 py-0.2 bg-blue-500 text-[9px] font-bold text-white rounded-full"
+                  title={`${shelfItems.length} items in shelf`}
+                >
+                  {shelfItems.length}
+                </span>
               )}
             </div>
           </motion.div>
         )}
 
         {/* 2. MEDIA PLAYER MODE */}
-        {mode === 'media' && (
+        {!isDragOver && mode === 'media' && (
           <MediaIsland
             key="media"
             media={media}
-            onPlayPause={() => setMedia((m) => ({ ...m, isPlaying: !m.isPlaying }))}
-            onNext={() => setMedia((m) => ({ ...m, title: 'Blinding Lights', artist: 'The Weeknd' }))}
-            onPrevious={() => setMedia((m) => ({ ...m, title: 'Save Your Tears', artist: 'The Weeknd' }))}
+            onPlayPause={() => handleMediaAction(media.isPlaying ? 'pause' : 'play')}
+            onNext={() => handleMediaAction('next')}
+            onPrevious={() => handleMediaAction('previous')}
           />
         )}
 
         {/* 3. SCREENSHOT & DROP SHELF MODE */}
-        {mode === 'shelf' && screenshot && (
+        {!isDragOver && mode === 'shelf' && shelfItems.length > 0 && (
           <ShelfIsland
             key="shelf"
-            screenshot={screenshot}
-            onDismiss={handleDismissScreenshot}
+            items={shelfItems}
+            onDismiss={handleDismissItem}
             onCopy={handleCopyScreenshot}
             onSave={handleSaveScreenshot}
           />
         )}
 
         {/* 4. BATTERY HUD MODE */}
-        {mode === 'battery' && (
+        {!isDragOver && mode === 'battery' && (
           <BatteryHUD key="battery" battery={battery} />
         )}
 
         {/* 5. QUICK MENU / SWITCHER MODE */}
-        {mode === 'menu' && (
+        {!isDragOver && mode === 'menu' && (
           <motion.div
             key="menu"
             initial={{ opacity: 0, scale: 0.95 }}

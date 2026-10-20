@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, screen, clipboard, nativeImage, dialog } f
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { execFile } from 'child_process'
 
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock()
@@ -12,10 +13,37 @@ if (!gotTheLock) {
 let mainWindow: BrowserWindow | null = null
 let lastClipboardImageHash = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
+let mediaPollInterval: NodeJS.Timeout | null = null
+let batteryPollInterval: NodeJS.Timeout | null = null
+
+let lastMediaSignature = ''
+let lastBatterySignature = ''
 
 const tempDir = path.join(os.tmpdir(), 'dynasis-screenshots')
 if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true })
+}
+
+function getScriptPath(scriptName: string): string {
+  return path.join(app.getAppPath(), 'electron/scripts', scriptName)
+}
+
+function runPowerShellScript(scriptName: string, args: string[] = []): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const scriptPath = getScriptPath(scriptName)
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args],
+      { windowsHide: true },
+      (error, stdout) => {
+        if (error) {
+          reject(error)
+        } else {
+          resolve(stdout.trim())
+        }
+      }
+    )
+  })
 }
 
 function createWindow() {
@@ -65,8 +93,10 @@ function createWindow() {
     }
   })
 
-  // Start clipboard watcher for screenshots
+  // Start background services
   startClipboardWatcher()
+  startMediaWatcher()
+  startBatteryWatcher()
 }
 
 function startClipboardWatcher() {
@@ -78,7 +108,6 @@ function startClipboardWatcher() {
       const size = image.getSize()
       if (size.width === 0 || size.height === 0) return
 
-      // Use a fast hash based on dimensions and data preview
       const buffer = image.toPNG()
       const hash = `${size.width}x${size.height}_${buffer.length}_${buffer.slice(0, 32).toString('hex')}`
 
@@ -107,6 +136,47 @@ function startClipboardWatcher() {
   }, 800)
 }
 
+function startMediaWatcher() {
+  const checkMedia = async () => {
+    try {
+      const output = await runPowerShellScript('get-media.ps1')
+      if (output && output !== lastMediaSignature) {
+        lastMediaSignature = output
+        const data = JSON.parse(output)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('media-state-changed', data)
+        }
+      }
+    } catch {
+      // Ignore background transient errors
+    }
+  }
+
+  // Initial check
+  checkMedia()
+  mediaPollInterval = setInterval(checkMedia, 1500)
+}
+
+function startBatteryWatcher() {
+  const checkBattery = async () => {
+    try {
+      const output = await runPowerShellScript('get-battery.ps1')
+      if (output && output !== lastBatterySignature) {
+        lastBatterySignature = output
+        const data = JSON.parse(output)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('battery-state-changed', data)
+        }
+      }
+    } catch {
+      // Ignore background transient errors
+    }
+  }
+
+  checkBattery()
+  batteryPollInterval = setInterval(checkBattery, 4000)
+}
+
 // IPC Handlers
 ipcMain.on('start-file-drag', (event, filePath: string) => {
   if (fs.existsSync(filePath)) {
@@ -114,6 +184,19 @@ ipcMain.on('start-file-drag', (event, filePath: string) => {
       file: filePath,
       icon: nativeImage.createFromPath(filePath).resize({ width: 64, height: 64 }),
     })
+  }
+})
+
+ipcMain.on('media-action', async (_event, action: string) => {
+  try {
+    await runPowerShellScript('control-media.ps1', [action])
+    // Trigger immediate media re-check
+    const output = await runPowerShellScript('get-media.ps1')
+    if (output && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('media-state-changed', JSON.parse(output))
+    }
+  } catch (err) {
+    console.error('Media action error:', err)
   }
 })
 
@@ -145,7 +228,7 @@ ipcMain.handle('copy-image-to-clipboard', async (_event, dataUrl: string) => {
 })
 
 ipcMain.on('dismiss-screenshot', (_event, _id: string) => {
-  // Can clean up temp files if desired
+  // Optional cleanup
 })
 
 ipcMain.on('app-minimize', () => {
@@ -168,6 +251,8 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (clipboardPollInterval) clearInterval(clipboardPollInterval)
+  if (mediaPollInterval) clearInterval(mediaPollInterval)
+  if (batteryPollInterval) clearInterval(batteryPollInterval)
   if (process.platform !== 'darwin') {
     app.quit()
   }

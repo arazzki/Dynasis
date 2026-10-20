@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Copy, Download, X, Check, Move } from 'lucide-react'
+import { Copy, Download, X, Check, Move, ChevronLeft, ChevronRight } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export interface ScreenshotItem {
@@ -8,34 +8,52 @@ export interface ScreenshotItem {
   dataUrl: string
   timestamp: number
   size?: { width: number; height: number }
+  name?: string
 }
 
 interface ShelfIslandProps {
-  screenshot: ScreenshotItem
-  onDismiss: () => void
-  onCopy: () => void
-  onSave: () => void
+  items: ScreenshotItem[]
+  onDismiss: (id: string) => void
+  onCopy: (item: ScreenshotItem) => void
+  onSave: (item: ScreenshotItem) => void
 }
 
 export const ShelfIsland: React.FC<ShelfIslandProps> = ({
-  screenshot,
+  items,
   onDismiss,
   onCopy,
   onSave,
 }) => {
+  const [currentIndex, setCurrentIndex] = useState(0)
   const [copied, setCopied] = useState(false)
 
+  // Ensure index is within bounds
+  const validIndex = Math.min(currentIndex, Math.max(0, items.length - 1))
+  const currentItem = items[validIndex]
+
+  if (!currentItem) return null
+
   const handleCopy = () => {
-    onCopy()
+    onCopy(currentItem)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
 
   const handleDragStart = (e: React.DragEvent) => {
-    if (screenshot.filePath && window.dynasis?.startFileDrag) {
+    if (currentItem.filePath && window.dynasis?.startFileDrag) {
       e.preventDefault()
-      window.dynasis.startFileDrag(screenshot.filePath)
+      window.dynasis.startFileDrag(currentItem.filePath)
     }
+  }
+
+  const handlePrev = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setCurrentIndex((prev) => (prev > 0 ? prev - 1 : items.length - 1))
+  }
+
+  const handleNext = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setCurrentIndex((prev) => (prev < items.length - 1 ? prev + 1 : 0))
   }
 
   return (
@@ -46,16 +64,16 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
       transition={{ type: 'spring', stiffness: 450, damping: 28 }}
       className="flex items-center justify-between w-full h-full px-4 text-white"
     >
-      {/* Left: Draggable Thumbnail */}
+      {/* Left: Thumbnail & Draggable Area */}
       <div className="flex items-center gap-3">
         <div
-          draggable={!!screenshot.filePath}
+          draggable={!!currentItem.filePath}
           onDragStart={handleDragStart}
           className="relative w-16 h-12 rounded-lg overflow-hidden bg-neutral-900 border border-white/20 shadow-md group cursor-grab active:cursor-grabbing flex-shrink-0"
           title="Drag this screenshot to any app (WhatsApp, Discord, Figma, etc.)"
         >
           <img
-            src={screenshot.dataUrl}
+            src={currentItem.dataUrl}
             alt="Screenshot preview"
             className="w-full h-full object-cover transition-transform group-hover:scale-105"
           />
@@ -64,20 +82,43 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
           </div>
         </div>
 
-        {/* Info & Drag hint */}
+        {/* Info & Shelf counter */}
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs font-semibold text-white tracking-wide">
-              Screenshot Captured
+              {items.length > 1 ? `Shelf (${validIndex + 1}/${items.length})` : 'Screenshot Captured'}
             </span>
           </div>
           <span className="text-[10px] text-neutral-400 flex items-center gap-1 mt-0.5">
             <Move className="w-2.5 h-2.5 text-neutral-500" />
-            Drag thumbnail into any app
+            Drag into chat or app
           </span>
         </div>
       </div>
+
+      {/* Center: Pagination controls if multiple items */}
+      {items.length > 1 && (
+        <div className="flex items-center gap-1 bg-white/5 rounded-full px-1.5 py-0.5 border border-white/10">
+          <button
+            onClick={handlePrev}
+            className="p-1 hover:bg-white/10 rounded-full text-neutral-300 hover:text-white"
+            title="Previous item"
+          >
+            <ChevronLeft className="w-3 h-3" />
+          </button>
+          <span className="text-[10px] font-mono text-neutral-300">
+            {validIndex + 1}/{items.length}
+          </span>
+          <button
+            onClick={handleNext}
+            className="p-1 hover:bg-white/10 rounded-full text-neutral-300 hover:text-white"
+            title="Next item"
+          >
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
       {/* Right: Quick Action Buttons */}
       <div className="flex items-center gap-1.5">
@@ -100,17 +141,17 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
         </button>
 
         <button
-          onClick={onSave}
+          onClick={() => onSave(currentItem)}
           className="p-1.5 bg-white/10 hover:bg-white/20 active:scale-95 transition-all rounded-full text-neutral-300 hover:text-white border border-white/10"
-          title="Save to folder"
+          title="Save image to file"
         >
           <Download className="w-3.5 h-3.5" />
         </button>
 
         <button
-          onClick={onDismiss}
+          onClick={() => onDismiss(currentItem.id)}
           className="p-1.5 bg-white/10 hover:bg-red-500/30 hover:text-red-400 active:scale-95 transition-all rounded-full text-neutral-400 border border-white/10 ml-0.5"
-          title="Dismiss"
+          title={items.length > 1 ? "Dismiss this item" : "Dismiss shelf"}
         >
           <X className="w-3.5 h-3.5" />
         </button>

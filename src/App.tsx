@@ -86,6 +86,7 @@ export default function App() {
 
   const [shelfItems, setShelfItems] = useState<ScreenshotItem[]>([])
   const [activeWaNotif, setActiveWaNotif] = useState<WhatsAppNotif | null>(null)
+  const [waConnected, setWaConnected] = useState(false)
   const [battery, setBattery] = useState<BatteryState>({ level: 100, isCharging: false })
   const [media, setMedia] = useState<MediaState>({
     title: 'No media playing',
@@ -417,6 +418,7 @@ export default function App() {
       if (data && Array.isArray(data.apps)) {
         setSyncedApps(data.apps)
         if (data.activeApp) setActiveForegroundApp(data.activeApp)
+        setWaConnected(Boolean((data as any).waWebTabOpen || (data as any).waBridgeActive))
       }
     })
   }, [])
@@ -430,6 +432,7 @@ export default function App() {
         if (typeof data.activeApp === 'string') {
           setActiveForegroundApp(data.activeApp)
         }
+        setWaConnected(Boolean((data as any).waWebTabOpen || (data as any).waBridgeActive))
       }
     })
   }, [])
@@ -1213,6 +1216,19 @@ export default function App() {
                       </button>
 
                       <button
+                        onClick={() => handleAppAction('whatsapp', 'bridge')}
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-[9.5px] font-medium text-emerald-300 transition-colors active:scale-95 truncate"
+                        title="Buka & sinkronkan WhatsApp Web secara background di Dynasis (tanpa WA Desktop)"
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            waConnected ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-400/40'
+                          }`}
+                        />
+                        <span className="truncate">WA Web</span>
+                      </button>
+
+                      <button
                         onClick={() => {
                           setIsPinned(false)
                           stateRef.current = 'compact'
@@ -1225,7 +1241,7 @@ export default function App() {
                             timestamp: Date.now(),
                           })
                         }}
-                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-[9.5px] font-medium text-emerald-300 transition-colors active:scale-95 truncate"
+                        className="flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-1 rounded-xl bg-white/[0.05] hover:bg-emerald-500/20 border border-white/[0.06] text-[9.5px] font-medium text-[#d5d8de] hover:text-emerald-300 transition-colors active:scale-95 truncate"
                         title="Simulasikan notifikasi WhatsApp Web masuk ke mode Compact Pill"
                       >
                         <MessageSquare className="w-3 h-3 text-emerald-400 flex-shrink-0" />
@@ -1339,16 +1355,30 @@ export default function App() {
                     })}
                   </div>
 
-                  {/* Bottom Bar: Foreground App Indicator + System Master Volume Controls */}
-                  <div className="flex items-center justify-between pt-1 border-t border-white/[0.05]">
-                    <span className="text-[10px] text-[#8e939c] truncate max-w-[260px]">
-                      Fokus Sistem:{' '}
-                      <b className="text-[#f5f6f8]">
-                        {activeForegroundApp || 'Windows Desktop'}
-                      </b>
-                    </span>
+                  {/* Bottom Bar: Foreground App Indicator + WA Web Bridge + System Master Volume Controls */}
+                  <div className="flex items-center justify-between pt-1 border-t border-white/[0.05] gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <button
+                        onClick={() => handleAppAction('whatsapp', 'bridge')}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-[10px] font-medium text-emerald-300 transition-colors flex-shrink-0"
+                        title="Buka & sinkronkan WhatsApp Web secara background di Dynasis (tanpa WA Desktop)"
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            waConnected ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-400/40'
+                          }`}
+                        />
+                        <span>{waConnected ? 'WA Web Aktif' : 'Sinkron WA Web'}</span>
+                      </button>
+                      <span className="text-[10px] text-[#8e939c] truncate max-w-[165px]">
+                        Fokus:{' '}
+                        <b className="text-[#f5f6f8]">
+                          {activeForegroundApp || 'Desktop'}
+                        </b>
+                      </span>
+                    </div>
 
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-shrink-0">
                       <span className="text-[10px] text-[#8e939c] mr-1">Master Vol:</span>
                       <button
                         onClick={() => handleAppAction('system', 'vol-down')}

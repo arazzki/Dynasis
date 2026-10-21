@@ -6,6 +6,9 @@ param (
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+Add-Type -AssemblyName UIAutomationClient -ErrorAction SilentlyContinue
+Add-Type -AssemblyName UIAutomationTypes -ErrorAction SilentlyContinue
+
 Add-Type @"
 using System;
 using System.Text;
@@ -26,6 +29,9 @@ public class Win32AppManager {
 
     [DllImport("user32.dll")]
     public static extern int GetWindowTextLength(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
@@ -82,6 +88,7 @@ public class Win32AppManager {
         }, IntPtr.Zero);
         return found;
     }
+
     public static List<string> GetAllVisibleWindowTitles() {
         var list = new List<string>();
         EnumWindows((hWnd, lParam) => {
@@ -93,6 +100,33 @@ public class Win32AppManager {
             string title = sb.ToString().Trim();
             if (!string.IsNullOrEmpty(title)) {
                 list.Add(title);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+
+    public static List<IntPtr> GetBrowserHwnds() {
+        var list = new List<IntPtr>();
+        EnumWindows((hWnd, lParam) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            var cb = new StringBuilder(64);
+            GetClassName(hWnd, cb, 64);
+            string cls = cb.ToString();
+            if (cls == "Chrome_WidgetWin_1" || cls == "MozillaWindowClass") {
+                int len = GetWindowTextLength(hWnd);
+                if (len <= 0) return true;
+                var sb = new StringBuilder(len + 1);
+                GetWindowText(hWnd, sb, sb.Capacity);
+                string title = sb.ToString().Trim();
+                if (!string.IsNullOrEmpty(title) &&
+                    title.IndexOf("Dynasis", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    title.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    title.IndexOf("Visual Studio Code", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    title.IndexOf("Spotify", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    title.IndexOf("Discord", StringComparison.OrdinalIgnoreCase) < 0) {
+                    list.Add(hWnd);
+                }
             }
             return true;
         }, IntPtr.Zero);
@@ -120,8 +154,13 @@ public class Win32AppManager {
 "@
 
 $script:winTitles = [Win32AppManager]::GetTopWindowTitles()
+$script:waWebTabOpen = $false
+$script:waTabUnread = 0
 
 function Get-LatestWhatsAppNotification {
+    $latestToast = $null
+
+    # 1. Check Windows Action Center Toast Notifications (Chrome, Opera GX, Edge, Brave, Firefox, or WhatsApp)
     try {
         $null = [Windows.UI.Notifications.Management.UserNotificationListener, Windows.UI.Notifications, ContentType = WindowsRuntime]
         $null = [Windows.UI.Notifications.NotificationKinds, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -142,30 +181,34 @@ function Get-LatestWhatsAppNotification {
                 for ($i = $notifs.Count - 1; $i -ge [Math]::Max(0, $notifs.Count - 15); $i--) {
                     $n = $notifs[$i]
                     $appName = ""
+                    $aumid = ""
                     try { $appName = $n.AppInfo.DisplayInfo.DisplayName } catch {}
+                    try { $aumid = $n.AppInfo.AppUserModelId } catch {}
                     # Ignore IDE / system utility notifications
-                    if ($appName -match '(?i)^(Antigravity|Snipping Tool|Windows Security|PowerShell)$') {
+                    if ($appName -match '(?i)^(Antigravity|Snipping Tool|Windows Security|PowerShell)$' -or
+                        $aumid -match '(?i)(Antigravity|ScreenSketch|SecurityCenter)') {
                         continue
                     }
                     $binding = $n.Notification.Visual.GetBinding([Windows.UI.Notifications.KnownNotificationBindings]::ToastGeneric)
                     if ($binding) {
                         $texts = @($binding.GetTextElements() | ForEach-Object { $_.Text } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                         $joined = ($texts -join " ")
-                        $isWhatsAppApp = $appName -match '(?i)whatsapp'
+                        $isWhatsAppApp = ($appName -match '(?i)whatsapp') -or ($aumid -match '(?i)whatsapp')
                         $isWhatsAppWeb = $joined -match '(?i)(whatsapp\.com|whatsapp\s*web|whatsapp)'
                         if ($isWhatsAppApp -or $isWhatsAppWeb) {
-                            # Filter out domain text like "web.whatsapp.com" to extract Sender & Message
-                            $cleanTexts = @($texts | Where-Object { $_ -notmatch '(?i)^(https?://)?(web\.)?whatsapp\.com/?$' })
+                            $script:waWebTabOpen = $true
+                            $cleanTexts = @($texts | Where-Object { $_ -notmatch '(?i)^(https?://)?(web\.)?whatsapp\.com/?$' -and $_ -notmatch '(?i)^WhatsApp\s*Web$' })
                             $sender = if ($cleanTexts.Count -ge 1) { $cleanTexts[0] } else { "WhatsApp Web" }
                             $msg = if ($cleanTexts.Count -ge 2) { ($cleanTexts[1..($cleanTexts.Count - 1)] -join " ") } elseif ($cleanTexts.Count -eq 1) { $cleanTexts[0] } else { "Pesan baru masuk" }
-                            if ($cleanTexts.Count -eq 1) { $sender = "WhatsApp" }
-                            return @{
+                            if ($cleanTexts.Count -eq 1) { $sender = "WhatsApp Web" }
+                            $latestToast = @{
                                 hasNotif = $true
                                 id = "toast_$($n.Id)"
                                 sender = $sender
                                 message = $msg
-                                source = if ($isWhatsAppApp) { "WhatsApp" } else { "WhatsApp Web" }
+                                source = "WhatsApp Web"
                             }
+                            break
                         }
                     }
                 }
@@ -173,25 +216,66 @@ function Get-LatestWhatsAppNotification {
         }
     } catch {}
 
-    # Fallback: Check visible browser window titles for "(N) WhatsApp"
+    # 2. Always check visible window titles AND background browser tabs (Chrome, Opera GX, Edge, Brave, Firefox) via UIAutomation
     try {
-        $allTitles = [Win32AppManager]::GetAllVisibleWindowTitles()
-        foreach ($t in $allTitles) {
+        $candidateTitles = New-Object System.Collections.Generic.List[string]
+        foreach ($wt in [Win32AppManager]::GetAllVisibleWindowTitles()) {
+            $candidateTitles.Add($wt)
+        }
+
+        $tabCondition = New-Object System.Windows.Automation.OrCondition(
+            (New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::TabItem
+            )),
+            (New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Document
+            ))
+        )
+
+        foreach ($h in [Win32AppManager]::GetBrowserHwnds()) {
+            try {
+                $el = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+                if ($el) {
+                    $tabs = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
+                    foreach ($tab in $tabs) {
+                        $tName = $tab.Current.Name
+                        if (-not [string]::IsNullOrWhiteSpace($tName)) {
+                            $candidateTitles.Add($tName)
+                        }
+                    }
+                }
+            } catch {}
+        }
+
+        $maxUnread = 0
+        foreach ($t in $candidateTitles) {
+            if ($t -match '(?i)WhatsApp') {
+                $script:waWebTabOpen = $true
+            }
             if ($t -match '\((\d+)\)\s*WhatsApp') {
                 $unreadCount = [int]$Matches[1]
-                if ($unreadCount -gt 0) {
-                    return @{
-                        hasNotif = $true
-                        id = "title_unread_$unreadCount"
-                        sender = "WhatsApp Web"
-                        message = "$unreadCount pesan belum dibaca di WhatsApp Web"
-                        source = "WhatsApp Web"
-                    }
+                if ($unreadCount -gt $maxUnread) {
+                    $maxUnread = $unreadCount
                 }
             }
         }
+        $script:waTabUnread = $maxUnread
     } catch {}
 
+    if ($latestToast) {
+        return $latestToast
+    }
+    if ($script:waTabUnread -gt 0) {
+        return @{
+            hasNotif = $true
+            id = "title_unread_$($script:waTabUnread)"
+            sender = "WhatsApp Web"
+            message = "$($script:waTabUnread) pesan baru belum dibaca di WhatsApp Web"
+            source = "WhatsApp Web"
+        }
+    }
     return $null
 }
 
@@ -262,7 +346,7 @@ if ($Mode -eq "status") {
 
     $discord = Get-AppSummary "discord" "Discord" @("Discord")
     $spotify = Get-AppSummary "spotify" "Spotify" @("Spotify")
-    $browser = Get-AppSummary "browser" "Browser" @("chrome", "msedge", "brave", "firefox")
+    $browser = Get-AppSummary "browser" "Browser" @("chrome", "opera", "msedge", "brave", "firefox")
     $vscode  = Get-AppSummary "vscode" "VS Code" @("Code")
 
     $activeAppName = ""
@@ -290,6 +374,8 @@ if ($Mode -eq "status") {
         activeTitle = $activeAppTitle
         apps = @($spotify, $discord, $browser, $vscode)
         waNotif = $waNotif
+        waTabUnread = $script:waTabUnread
+        waWebTabOpen = $script:waWebTabOpen
     }
     $result | ConvertTo-Json -Compress -Depth 4
     exit 0
@@ -374,6 +460,7 @@ if ($Mode -eq "action") {
     }
 
     if ($t -eq "whatsapp") {
+        # 1. Check if active window title already contains WhatsApp
         $waHwnd = [Win32AppManager]::FindWindowByTitlePattern("WhatsApp")
         if ($waHwnd -ne [IntPtr]::Zero) {
             if ([Win32AppManager]::IsIconic($waHwnd)) {
@@ -385,15 +472,50 @@ if ($Mode -eq "action") {
             '{"success": true, "action": "focused_whatsapp"}'
             exit 0
         }
-        if (-not (Focus-ProcessWindow @("WhatsApp", "chrome", "msedge", "brave", "firefox"))) {
-            Start-Process "https://web.whatsapp.com"
-        }
-        '{"success": true, "action": "opened_whatsapp"}'
+
+        # 2. Check background browser tabs in Chrome / Opera GX / Edge / Brave / Firefox for WhatsApp Web
+        try {
+            $tabCondition = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::TabItem
+            )
+            foreach ($h in [Win32AppManager]::GetBrowserHwnds()) {
+                $el = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+                if ($el) {
+                    $tabs = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
+                    foreach ($tab in $tabs) {
+                        if ($tab.Current.Name -match '(?i)WhatsApp') {
+                            if ([Win32AppManager]::IsIconic($h)) {
+                                [Win32AppManager]::ShowWindowAsync($h, 9) | Out-Null
+                            } else {
+                                [Win32AppManager]::ShowWindowAsync($h, 5) | Out-Null
+                            }
+                            [Win32AppManager]::SetForegroundWindow($h) | Out-Null
+                            try {
+                                $selPattern = $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+                                if ($selPattern) { $selPattern.Select() }
+                            } catch {
+                                try {
+                                    $invPattern = $tab.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                                    if ($invPattern) { $invPattern.Invoke() }
+                                } catch {}
+                            }
+                            '{"success": true, "action": "focused_whatsapp_tab"}'
+                            exit 0
+                        }
+                    }
+                }
+            }
+        } catch {}
+
+        # 3. Otherwise open web.whatsapp.com directly in the user's browser
+        Start-Process "https://web.whatsapp.com"
+        '{"success": true, "action": "opened_whatsapp_web"}'
         exit 0
     }
 
     if ($t -eq "browser") {
-        if (-not (Focus-ProcessWindow @("chrome", "msedge", "brave", "firefox"))) {
+        if (-not (Focus-ProcessWindow @("chrome", "opera", "msedge", "brave", "firefox"))) {
             Start-Process "https://www.google.com"
         }
         '{"success": true, "action": "opened_browser"}'

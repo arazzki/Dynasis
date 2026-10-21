@@ -10,6 +10,7 @@ import {
   Tray,
   Menu,
   shell,
+  session,
 } from 'electron'
 import path from 'path'
 import fs from 'fs'
@@ -40,7 +41,9 @@ if (!gotTheLock) {
 }
 
 let mainWindow: BrowserWindow | null = null
+let waWindow: BrowserWindow | null = null
 let tray: Tray | null = null
+let isQuittingApp = false
 
 app.on('second-instance', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -63,7 +66,10 @@ let lastTrackKey = ''
 let cachedAlbumArt: string | null = null
 let lastBatterySignature = ''
 let lastAppsSignature = ''
-let lastWaNotifId = ''
+let lastWaToastId = ''
+let lastWaTabUnread = 0
+let lastWaBridgeUnread = 0
+let lastWaNotifFiredAt = 0
 let initializedWaNotif = false
 
 // Current active island bounding box in window-logical coordinates (starts in Stealth Edge hidden mode)
@@ -572,6 +578,13 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: 'Sinkron WhatsApp Web (Background Bridge)',
+      click: () => {
+        openOrFocusWhatsAppWebBridge(true)
+      },
+    },
+    { type: 'separator' },
+    {
       label: 'Jalankan Otomatis Saat Windows Menyala',
       type: 'checkbox',
       checked: isAutoStart,
@@ -590,6 +603,7 @@ function updateTrayMenu() {
     {
       label: 'Keluar dari Dynasis (Quit)',
       click: () => {
+        isQuittingApp = true
         app.quit()
       },
     },
@@ -928,6 +942,219 @@ function startBatteryWatcher() {
   batteryPollInterval = setInterval(checkBattery, 4000)
 }
 
+function dispatchWhatsAppNotification(payload: {
+  id: string
+  sender: string
+  message: string
+  source?: string
+}) {
+  const now = Date.now()
+  if (now - lastWaNotifFiredAt < 1800) return
+  lastWaNotifFiredAt = now
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('wa-notification', {
+      id: payload.id || `wa_${now}`,
+      sender: payload.sender || 'WhatsApp Web',
+      message: payload.message || 'Pesan baru masuk',
+      source: payload.source || 'WhatsApp Web',
+      timestamp: now,
+    })
+  }
+}
+
+function getWaBridgeConfigPath(): string {
+  return path.join(app.getPath('userData'), 'wa-bridge-config.json')
+}
+
+function setWaBridgeEnabledPref(enabled: boolean) {
+  try {
+    fs.writeFileSync(getWaBridgeConfigPath(), JSON.stringify({ enabled }), 'utf-8')
+  } catch {}
+}
+
+function isWaBridgeEnabledPref(): boolean {
+  try {
+    const p = getWaBridgeConfigPath()
+    if (fs.existsSync(p)) {
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'))
+      return Boolean(parsed?.enabled)
+    }
+  } catch {}
+  return false
+}
+
+function openOrFocusWhatsAppWebBridge(showWindow = true) {
+  if (showWindow) {
+    setWaBridgeEnabledPref(true)
+  }
+
+  if (waWindow && !waWindow.isDestroyed()) {
+    if (showWindow) {
+      waWindow.show()
+      if (waWindow.isMinimized()) waWindow.restore()
+      waWindow.focus()
+    }
+    return waWindow
+  }
+
+  const CHROME_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  const waSession = session.fromPartition('persist:whatsapp')
+  waSession.setUserAgent(CHROME_UA)
+  waSession.setPermissionCheckHandler(() => true)
+  waSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(true)
+  })
+
+  waWindow = new BrowserWindow({
+    title: 'Dynasis — WhatsApp Web Sync (Tutup [X] agar tetap sinkron di latar belakang)',
+    icon: createTrayIcon(),
+    width: 1020,
+    height: 700,
+    show: showWindow,
+    autoHideMenuBar: true,
+    backgroundColor: '#111b21',
+    webPreferences: {
+      partition: 'persist:whatsapp',
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false,
+    },
+  })
+
+  waWindow.webContents.setUserAgent(CHROME_UA)
+
+  const injectWaHooks = () => {
+    if (!waWindow || waWindow.isDestroyed()) return
+    waWindow.webContents
+      .executeJavaScript(
+        `(() => {
+          if (window.__dynasisWaHooked) return;
+          window.__dynasisWaHooked = true;
+
+          const emitWa = (sender, message) => {
+            try {
+              const s = String(sender || 'WhatsApp Web').trim();
+              const m = String(message || 'Pesan baru masuk').trim();
+              if (!s && !m) return;
+              console.info('__DYNASIS_WA__:' + JSON.stringify({
+                id: 'wabridge_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+                sender: s,
+                message: m,
+                source: 'WhatsApp Web'
+              }));
+            } catch (e) {}
+          };
+
+          const OrigNotif = window.Notification;
+          function DynasisNotification(title, options) {
+            emitWa(title, options && options.body);
+            this.title = title;
+            this.body = (options && options.body) || '';
+            this.close = () => {};
+            this.addEventListener = () => {};
+            this.removeEventListener = () => {};
+          }
+          DynasisNotification.permission = 'granted';
+          DynasisNotification.requestPermission = async () => 'granted';
+          try {
+            Object.defineProperty(window, 'Notification', {
+              value: DynasisNotification,
+              configurable: true,
+              writable: true
+            });
+          } catch (e) {
+            window.Notification = DynasisNotification;
+          }
+
+          if (window.ServiceWorkerRegistration && ServiceWorkerRegistration.prototype) {
+            const origShow = ServiceWorkerRegistration.prototype.showNotification;
+            ServiceWorkerRegistration.prototype.showNotification = function(title, options) {
+              emitWa(title, options && options.body);
+              return origShow ? origShow.apply(this, arguments) : Promise.resolve();
+            };
+          }
+        })();`
+      )
+      .catch(() => {})
+  }
+
+  waWindow.webContents.on('dom-ready', injectWaHooks)
+  waWindow.webContents.on('did-finish-load', injectWaHooks)
+
+  waWindow.webContents.on('console-message', (_event, _level, message) => {
+    if (typeof message === 'string' && message.startsWith('__DYNASIS_WA__:')) {
+      try {
+        const raw = message.slice('__DYNASIS_WA__:'.length)
+        const parsed = JSON.parse(raw)
+        if (parsed && (parsed.sender || parsed.message)) {
+          dispatchWhatsAppNotification(parsed)
+        }
+      } catch {}
+    }
+  })
+
+  waWindow.on('page-title-updated', (_event, title) => {
+    const m = title.match(/\((\d+)\)\s*WhatsApp/i)
+    const count = m ? parseInt(m[1], 10) : 0
+    if (count > lastWaBridgeUnread) {
+      lastWaBridgeUnread = count
+      setTimeout(async () => {
+        if (Date.now() - lastWaNotifFiredAt < 1800) return
+        let sender = 'WhatsApp Web'
+        let msg = `${count} pesan baru belum dibaca di WhatsApp Web`
+        try {
+          if (waWindow && !waWindow.isDestroyed()) {
+            const scraped = await waWindow.webContents.executeJavaScript(`(() => {
+              try {
+                const badge = document.querySelector('#pane-side span[aria-label*="unread"], #pane-side span[aria-label*="belum dibaca"]');
+                const row = badge ? badge.closest('[role="listitem"], [role="row"]') : null;
+                if (row) {
+                  const titleEl = row.querySelector('span[dir="auto"][title]');
+                  const spans = Array.from(row.querySelectorAll('span[dir="ltr"], span[dir="auto"]'))
+                    .map(el => (el.textContent || '').trim())
+                    .filter(t => t.length > 1 && (!titleEl || t !== titleEl.getAttribute('title')));
+                  return {
+                    sender: titleEl ? titleEl.getAttribute('title') : 'WhatsApp Web',
+                    message: spans.length > 0 ? spans[spans.length - 1] : '${count} pesan baru belum dibaca'
+                  };
+                }
+              } catch (e) {}
+              return null;
+            })()`)
+            if (scraped && scraped.sender) {
+              sender = scraped.sender
+              msg = scraped.message || msg
+            }
+          }
+        } catch {}
+        dispatchWhatsAppNotification({
+          id: `wabridge_title_${Date.now()}_${count}`,
+          sender,
+          message: msg,
+          source: 'WhatsApp Web',
+        })
+      }, 350)
+    } else if (count < lastWaBridgeUnread) {
+      lastWaBridgeUnread = count
+    }
+  })
+
+  waWindow.on('close', (e) => {
+    if (!isQuittingApp && waWindow && !waWindow.isDestroyed()) {
+      e.preventDefault()
+      waWindow.hide()
+    }
+  })
+
+  waWindow.on('closed', () => {
+    waWindow = null
+  })
+
+  waWindow.loadURL('https://web.whatsapp.com')
+  return waWindow
+}
+
 function startAppsWatcher() {
   let busy = false
   const checkApps = async () => {
@@ -939,10 +1166,14 @@ function startAppsWatcher() {
         const data = JSON.parse(output)
         // Safe Exam Browser (SEB) Guard: immediately self-terminate if SEB starts!
         if (data && data.sebDetected) {
+          isQuittingApp = true
           globalShortcut.unregisterAll()
           if (tray) {
             tray.destroy()
             tray = null
+          }
+          if (waWindow && !waWindow.isDestroyed()) {
+            waWindow.destroy()
           }
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.destroy()
@@ -950,33 +1181,45 @@ function startAppsWatcher() {
           app.exit(0)
           return
         }
-        if (data && data.waNotif && data.waNotif.hasNotif && data.waNotif.id) {
-          if (!initializedWaNotif) {
-            // Seed existing toast notification on boot so historical Action Center toasts don't replay
-            initializedWaNotif = true
-            lastWaNotifId = String(data.waNotif.id)
-          } else if (String(data.waNotif.id) !== lastWaNotifId) {
-            lastWaNotifId = String(data.waNotif.id)
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('wa-notification', {
-                id: String(data.waNotif.id),
-                sender: data.waNotif.sender || 'WhatsApp Web',
-                message: data.waNotif.message || 'Pesan baru masuk',
-                source: data.waNotif.source || 'WhatsApp Web',
-                timestamp: Date.now(),
-              })
-            }
-          }
-        } else {
+
+        const currentTabUnread = typeof data?.waTabUnread === 'number' ? data.waTabUnread : 0
+        const toastNotif =
+          data?.waNotif?.hasNotif && String(data.waNotif.id).startsWith('toast_')
+            ? data.waNotif
+            : null
+
+        if (!initializedWaNotif) {
+          // Seed existing toast & unread count on boot so historical notifications don't replay
           initializedWaNotif = true
-          // If unread badge cleared (user read the message), reset so next (1) WhatsApp triggers again
-          if (lastWaNotifId.startsWith('title_unread_')) {
-            lastWaNotifId = ''
+          lastWaToastId = toastNotif ? String(toastNotif.id) : ''
+          lastWaTabUnread = currentTabUnread
+        } else {
+          if (toastNotif && String(toastNotif.id) !== lastWaToastId) {
+            lastWaToastId = String(toastNotif.id)
+            dispatchWhatsAppNotification({
+              id: String(toastNotif.id),
+              sender: toastNotif.sender || 'WhatsApp Web',
+              message: toastNotif.message || 'Pesan baru masuk',
+              source: toastNotif.source || 'WhatsApp Web',
+            })
+          }
+          if (currentTabUnread > lastWaTabUnread) {
+            lastWaTabUnread = currentTabUnread
+            dispatchWhatsAppNotification({
+              id: `tab_unread_${Date.now()}_${currentTabUnread}`,
+              sender: 'WhatsApp Web',
+              message: `${currentTabUnread} pesan baru belum dibaca di WhatsApp Web`,
+              source: 'WhatsApp Web',
+            })
+          } else if (currentTabUnread < lastWaTabUnread) {
+            lastWaTabUnread = currentTabUnread
           }
         }
 
-        if (output !== lastAppsSignature) {
-          lastAppsSignature = output
+        data.waBridgeActive = Boolean(waWindow && !waWindow.isDestroyed())
+        const nextSig = JSON.stringify(data)
+        if (nextSig !== lastAppsSignature) {
+          lastAppsSignature = nextSig
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('apps-state-changed', data)
           }
@@ -1011,17 +1254,38 @@ ipcMain.handle('get-current-battery', async () => {
 ipcMain.handle('get-apps-status', async () => {
   try {
     const output = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
-    if (output) return JSON.parse(output)
+    if (output) {
+      const parsed = JSON.parse(output)
+      parsed.waBridgeActive = Boolean(waWindow && !waWindow.isDestroyed())
+      return parsed
+    }
   } catch (err) {
     console.error('get-apps-status error:', err)
   }
-  return { apps: [], activeApp: '', activeTitle: '' }
+  return {
+    apps: [],
+    activeApp: '',
+    activeTitle: '',
+    waBridgeActive: Boolean(waWindow && !waWindow.isDestroyed()),
+  }
 })
 
 ipcMain.handle('app-action', async (_event, payload: { target: string; command?: string }) => {
   try {
-    const target = payload?.target || ''
-    const command = payload?.command || 'open'
+    const target = (payload?.target || '').toLowerCase()
+    const command = (payload?.command || 'open').toLowerCase()
+
+    if (target === 'whatsapp') {
+      if (command === 'bridge') {
+        openOrFocusWhatsAppWebBridge(true)
+        return { success: true, action: 'opened_wa_bridge' }
+      }
+      if (waWindow && !waWindow.isDestroyed()) {
+        openOrFocusWhatsAppWebBridge(true)
+        return { success: true, action: 'focused_wa_bridge' }
+      }
+    }
+
     const output = await runPowerShellScript('manage-apps.ps1', [
       '-Mode',
       'action',
@@ -1035,8 +1299,10 @@ ipcMain.handle('app-action', async (_event, payload: { target: string; command?:
       try {
         const appsOut = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
         if (appsOut && mainWindow && !mainWindow.isDestroyed()) {
-          lastAppsSignature = appsOut
-          mainWindow.webContents.send('apps-state-changed', JSON.parse(appsOut))
+          const parsed = JSON.parse(appsOut)
+          parsed.waBridgeActive = Boolean(waWindow && !waWindow.isDestroyed())
+          lastAppsSignature = JSON.stringify(parsed)
+          mainWindow.webContents.send('apps-state-changed', parsed)
         }
         if (target === 'spotify') {
           const mediaData = await fetchMediaState(true)
@@ -1150,6 +1416,7 @@ ipcMain.on('app-minimize', () => {
 })
 
 ipcMain.on('app-close', () => {
+  isQuittingApp = true
   app.quit()
 })
 
@@ -1158,6 +1425,11 @@ app.whenReady().then(() => {
   migrateAutoStartRegistry()
   setupSystemTray()
   createWindow()
+  if (isWaBridgeEnabledPref()) {
+    setTimeout(() => {
+      openOrFocusWhatsAppWebBridge(false)
+    }, 2500)
+  }
 
   // Global hotkey: Alt + \ toggles show / hide Dynasis
   globalShortcut.register('Alt+\\', () => {

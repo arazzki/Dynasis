@@ -770,7 +770,7 @@ export default function App() {
         {/* ── 1. COMPACT ISLAND (Notch / Pill + Incoming WhatsApp Web Notification Mode) ── */}
         {islandState === 'compact' && !isDragOver && (
           <div
-            className="w-full h-full flex items-center justify-between px-3 cursor-pointer group"
+            className="relative w-full h-full flex items-center justify-between px-3 cursor-pointer group"
             title={
               activeWaNotif
                 ? 'Klik untuk membuka WhatsApp Web'
@@ -830,7 +830,11 @@ export default function App() {
             ) : (
               <>
                 {/* Left: Album Art / Dot + Title - Artist/Band */}
-                <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
+                <div
+                  className={`flex items-center gap-2 min-w-0 ${
+                    hasActiveMedia ? 'flex-1 pr-2' : 'flex-shrink-0'
+                  }`}
+                >
                   {media.albumArt ? (
                     <img
                       src={media.albumArt}
@@ -866,15 +870,15 @@ export default function App() {
                   </span>
                 </div>
 
-                {/* Center: Optional Clock when no active media */}
+                {/* Center: True centered Clock when no active media */}
                 {prefs.showClock && !hasActiveMedia && (
-                  <span className="text-[11px] font-mono text-white/75 tabular-nums">
+                  <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-[11px] font-mono font-medium text-white/80 tabular-nums tracking-tight whitespace-nowrap">
                     {clockText}
                   </span>
                 )}
 
                 {/* Right: Quick Play/Pause on Hover (coucou pill style) OR Equalizer + Shelf + Battery */}
-                <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className="flex items-center gap-1.5 flex-shrink-0 ml-auto">
                   {hasActiveMedia && isHovered ? (
                     <div className="flex items-center gap-1">
                       <button

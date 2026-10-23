@@ -73,6 +73,32 @@ interface BatteryLike {
 
 type NavigatorWithBattery = Navigator & { getBattery?: () => Promise<BatteryLike> }
 
+// Keep the shelf bounded so previews cannot accumulate forever in memory.
+const SHELF_LIMIT = 15
+
+// The sample capture is authored as SVG; rasterize it so copy/save can treat it
+// like any other raster screenshot.
+function rasterizeSvg(svgDataUrl: string, width: number, height: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('2D canvas unavailable')
+        ctx.drawImage(image, 0, 0, width, height)
+        resolve(canvas.toDataURL('image/png'))
+      } catch (err) {
+        reject(err)
+      }
+    }
+    image.onerror = () => reject(new Error('Failed to load SVG sample'))
+    image.src = svgDataUrl
+  })
+}
+
 function loadPrefs(): DynasisPreferences {
   try {
     const raw = localStorage.getItem(PREFS_STORAGE_KEY)
@@ -138,6 +164,29 @@ export default function App() {
   dragOverRef.current = isDragOver
   const waNotifRef = useRef(activeWaNotif)
   waNotifRef.current = activeWaNotif
+  const shelfItemsRef = useRef<ScreenshotItem[]>([])
+
+  const disposeShelfItem = (item: ScreenshotItem) => {
+    // Dropped files use a blob: preview URL that must be revoked explicitly.
+    if (item.dataUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(item.dataUrl)
+    }
+    // Main only deletes paths inside its own screenshot temp dir, so user
+    // files that were dropped onto the shelf are never touched.
+    if (item.filePath) {
+      window.dynasis?.dismissScreenshot?.(item.filePath)
+    }
+  }
+
+  const applyShelfItems = (next: ScreenshotItem[]) => {
+    const clipped = next.slice(0, SHELF_LIMIT)
+    const keptIds = new Set(clipped.map((item) => item.id))
+    for (const item of shelfItemsRef.current) {
+      if (!keptIds.has(item.id)) disposeShelfItem(item)
+    }
+    shelfItemsRef.current = clipped
+    setShelfItems(clipped)
+  }
 
   const clearDragOver = () => {
     if (dragOverWatchdogRef.current) {
@@ -460,7 +509,7 @@ export default function App() {
         clearTimeout(leaveTimerRef.current)
         leaveTimerRef.current = null
       }
-      setShelfItems((prev) => [data, ...prev].slice(0, 15))
+      applyShelfItems([data, ...shelfItemsRef.current])
       setView('shelf')
       stateRef.current = 'expanded'
       setIslandState('expanded')
@@ -483,10 +532,8 @@ export default function App() {
   useEffect(() => {
     if (!window.dynasis?.onClipboardTextCaptured) return
     return window.dynasis.onClipboardTextCaptured((data) => {
-      setShelfItems((prev) => {
-        const filtered = prev.filter((item) => item.text !== data.text)
-        return [data, ...filtered].slice(0, 15)
-      })
+      const filtered = shelfItemsRef.current.filter((item) => item.text !== data.text)
+      applyShelfItems([data, ...filtered])
     })
   }, [])
 
@@ -694,13 +741,13 @@ export default function App() {
           timestamp: Date.now(),
         })
       }
-      setShelfItems((prev) => [...newItems, ...prev].slice(0, 15))
+      applyShelfItems([...newItems, ...shelfItemsRef.current])
       setView('shelf')
       setIslandState('expanded')
     }
   }
 
-  const simulateScreenshot = () => {
+  const simulateScreenshot = async () => {
     const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
       <defs>
         <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -714,16 +761,22 @@ export default function App() {
       <text x="48" y="160" fill="#f8fafc" font-family="Segoe UI, sans-serif" font-size="32" font-weight="bold">Dynasis Capture</text>
       <text x="48" y="205" fill="#94a3b8" font-family="Segoe UI, sans-serif" font-size="18">Ready to drag or copy to clipboard</text>
     </svg>`
-    const dataUrl = `data:image/svg+xml;base64,${btoa(svgContent)}`
+    const svgDataUrl = `data:image/svg+xml;base64,${btoa(svgContent)}`
+    let dataUrl = svgDataUrl
+    try {
+      dataUrl = await rasterizeSvg(svgDataUrl, 640, 360)
+    } catch {
+      // Fall back to the SVG preview; copy/save will be unavailable.
+    }
     const sampleItem: ScreenshotItem = {
       id: `sample_${Date.now()}`,
       type: 'image',
       dataUrl,
       name: `Capture_${new Date().toLocaleTimeString([], { hour12: false }).replace(/:/g, '')}.png`,
       timestamp: Date.now(),
-      size: { width: 1920, height: 1080 },
+      size: { width: 640, height: 360 },
     }
-    setShelfItems((prev) => [sampleItem, ...prev].slice(0, 15))
+    applyShelfItems([sampleItem, ...shelfItemsRef.current])
     setView('shelf')
     setIslandState('expanded')
   }
@@ -733,20 +786,33 @@ export default function App() {
       await window.dynasis.copyTextToClipboard(item.text || '')
       return
     }
-    if (item.dataUrl && window.dynasis?.copyImageToClipboard) {
-      await window.dynasis.copyImageToClipboard(item.dataUrl)
+    const payload = item.filePath
+      ? { filePath: item.filePath }
+      : item.dataUrl
+        ? { dataUrl: item.dataUrl }
+        : null
+    if (payload && window.dynasis?.copyImageToClipboard) {
+      await window.dynasis.copyImageToClipboard(payload)
     }
   }
 
   const handleSaveScreenshot = async (item: ScreenshotItem) => {
-    if (item.dataUrl && window.dynasis?.saveScreenshot) {
-      await window.dynasis.saveScreenshot(item.dataUrl)
+    const payload = item.filePath
+      ? { filePath: item.filePath }
+      : item.dataUrl
+        ? { dataUrl: item.dataUrl }
+        : null
+    if (payload && window.dynasis?.saveScreenshot) {
+      await window.dynasis.saveScreenshot(payload)
     }
   }
 
   const handleDismissItem = (id: string) => {
-    window.dynasis?.dismissScreenshot?.(id)
-    setShelfItems((prev) => prev.filter((item) => item.id !== id))
+    applyShelfItems(shelfItemsRef.current.filter((item) => item.id !== id))
+  }
+
+  const handleClearShelf = () => {
+    applyShelfItems([])
   }
 
   const handleMediaAction = (
@@ -1453,7 +1519,7 @@ export default function App() {
                 <ShelfIsland
                   items={shelfItems}
                   onDismiss={handleDismissItem}
-                  onClearAll={() => setShelfItems([])}
+                  onClearAll={handleClearShelf}
                   onCopy={handleCopyScreenshot}
                   onSave={handleSaveScreenshot}
                   onSimulateScreenshot={simulateScreenshot}

@@ -91,9 +91,71 @@ let userCustomX: number | null = null
 let userCustomY: number | null = null
 
 const tempDir = path.join(os.tmpdir(), 'dynasis-screenshots')
-if (!fs.existsSync(tempDir)) {
-  fs.mkdirSync(tempDir, { recursive: true })
+const previewMaxDimension = 480
+
+// The shelf lives only in renderer memory, so any screenshot left in the temp
+// dir belongs to a previous run. Wipe it on boot instead of leaking gigabytes.
+function clearTempScreenshotDir() {
+  try {
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true })
+      return
+    }
+    for (const entry of fs.readdirSync(tempDir)) {
+      const entryPath = path.join(tempDir, entry)
+      try {
+        const stat = fs.lstatSync(entryPath)
+        if (stat.isDirectory()) {
+          fs.rmSync(entryPath, { recursive: true, force: true })
+        } else {
+          fs.unlinkSync(entryPath)
+        }
+      } catch {
+        // File may be locked by another process; skip it.
+      }
+    }
+  } catch (err) {
+    console.error('Failed to reset screenshot temp dir:', err)
+  }
 }
+
+function isInsideTempDir(filePath: string): boolean {
+  try {
+    const resolved = path.resolve(filePath)
+    const root = path.resolve(tempDir) + path.sep
+    return resolved.toLowerCase().startsWith(root.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+// Only ever delete files that we created ourselves, never user files.
+function removeTempFile(filePath?: string | null) {
+  if (!filePath || !isInsideTempDir(filePath)) return
+  try {
+    fs.unlinkSync(filePath)
+  } catch {
+    // Already deleted.
+  }
+}
+
+// Safety net: if the renderer never acknowledges a capture (crash, reload),
+// keep at most a few dozen screenshots instead of growing without bound.
+function pruneTempScreenshots(maxFiles = 40) {
+  try {
+    const files = fs
+      .readdirSync(tempDir)
+      .filter((name) => /^screenshot_\d+\.png$/.test(name))
+      .sort()
+    for (const name of files.slice(0, Math.max(0, files.length - maxFiles))) {
+      removeTempFile(path.join(tempDir, name))
+    }
+  } catch {
+    // Ignore.
+  }
+}
+
+clearTempScreenshotDir()
 
 function isPhysicalPath(p: string): boolean {
   const lower = p.toLowerCase()
@@ -1051,7 +1113,24 @@ function startClipboardWatcher() {
         const filePath = path.join(tempDir, fileName)
 
         fs.writeFileSync(filePath, buffer)
-        const dataUrl = image.toDataURL()
+
+        // Only ship a small preview to the renderer. Full-resolution pixels
+        // stay on disk and are read back for copy/save/drag.
+        const scale = Math.min(
+          1,
+          previewMaxDimension / Math.max(size.width, size.height)
+        )
+        const preview =
+          scale < 1
+            ? image.resize({
+                width: Math.max(1, Math.round(size.width * scale)),
+                height: Math.max(1, Math.round(size.height * scale)),
+                quality: 'good',
+              })
+            : image
+        const dataUrl = preview.toDataURL()
+
+        pruneTempScreenshots()
 
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('screenshot-captured', {
@@ -1379,26 +1458,76 @@ ipcMain.on('media-action', async (_event, action: string, value?: number) => {
   }
 })
 
-ipcMain.handle('save-screenshot', async (_event, dataUrl: string) => {
+type ImagePayload = { filePath?: string; dataUrl?: string } | string
+
+function readImagePayload(payload?: ImagePayload | null): Buffer | null {
+  if (!payload) return null
+
+  if (typeof payload === 'object' && payload.filePath) {
+    if (!fs.existsSync(payload.filePath)) return null
+    try {
+      return fs.readFileSync(payload.filePath)
+    } catch {
+      return null
+    }
+  }
+
+  const dataUrl = typeof payload === 'string' ? payload : payload.dataUrl
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) return null
+  const comma = dataUrl.indexOf(',')
+  if (comma === -1) return null
+  return Buffer.from(dataUrl.slice(comma + 1), 'base64')
+}
+
+function resolveImage(payload?: ImagePayload | null): Electron.NativeImage | null {
+  if (!payload) return null
+
+  if (typeof payload === 'object' && payload.filePath && fs.existsSync(payload.filePath)) {
+    const fromPath = nativeImage.createFromPath(payload.filePath)
+    if (!fromPath.isEmpty()) return fromPath
+  }
+
+  const dataUrl = typeof payload === 'string' ? payload : payload.dataUrl
+  if (!dataUrl) return null
+  try {
+    const image = nativeImage.createFromDataURL(dataUrl)
+    return image.isEmpty() ? null : image
+  } catch {
+    return null
+  }
+}
+
+ipcMain.handle('save-screenshot', async (_event, payload: ImagePayload) => {
   if (!mainWindow) return null
+
+  const buffer = readImagePayload(payload)
+  if (!buffer) return null
+
+  const sourceFilePath = typeof payload === 'object' ? payload.filePath : undefined
+  const sourceExt = sourceFilePath ? path.extname(sourceFilePath).toLowerCase() : '.png'
+  const ext = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(sourceExt)
+    ? sourceExt
+    : '.png'
+  const extName = ext.replace('.', '')
+
   const { filePath } = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Screenshot',
-    defaultPath: `Dynasis_Screenshot_${Date.now()}.png`,
-    filters: [{ name: 'PNG Image', extensions: ['png'] }],
+    defaultPath: `Dynasis_Screenshot_${Date.now()}${ext}`,
+    filters: [{ name: ext === '.png' ? 'PNG Image' : `${extName.toUpperCase()} Image`, extensions: [extName] }],
   })
 
   if (filePath) {
-    const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '')
-    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'))
+    fs.writeFileSync(filePath, buffer)
     return filePath
   }
   return null
 })
 
-ipcMain.handle('copy-image-to-clipboard', async (_event, dataUrl: string) => {
+ipcMain.handle('copy-image-to-clipboard', async (_event, payload: ImagePayload) => {
   try {
-    const img = nativeImage.createFromDataURL(dataUrl)
-    clipboard.writeImage(img)
+    const image = resolveImage(payload)
+    if (!image) return false
+    clipboard.writeImage(image)
     lastClipboardImageHash = imageHash(clipboard.readImage())
     return true
   } catch (err) {
@@ -1428,8 +1557,9 @@ ipcMain.handle('open-external-url', async (_event, url: string) => {
   return false
 })
 
-ipcMain.on('dismiss-screenshot', () => {
-  // Optional cleanup
+ipcMain.on('dismiss-screenshot', (_event, filePath?: string | null) => {
+  // Legacy payloads were item ids (no path), those are harmless no-ops.
+  removeTempFile(filePath)
 })
 
 ipcMain.on('app-minimize', () => {
@@ -1472,6 +1602,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   isQuittingApp = true
   stopHosts()
+  clearTempScreenshotDir()
   globalShortcut.unregisterAll()
   if (tray) {
     tray.destroy()

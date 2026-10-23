@@ -7,6 +7,11 @@ export interface CursorPayload {
   onWakeStrip: boolean
 }
 
+export interface ImagePayload {
+  filePath?: string
+  dataUrl?: string
+}
+
 export interface DynasisAPI {
   setIslandSize: (width: number, height: number) => void
   setIslandRect: (x: number, y: number, w: number, h: number) => void
@@ -21,11 +26,11 @@ export interface DynasisAPI {
   onAppsStateChanged: (callback: (data: any) => void) => () => void
   onWhatsAppNotification: (callback: (notif: { id: string; sender: string; message: string; source: string; timestamp: number }) => void) => () => void
   startFileDrag: (filePath: string) => void
-  saveScreenshot: (dataUrl: string) => Promise<string | null>
-  copyImageToClipboard: (dataUrl: string) => Promise<boolean>
+  saveScreenshot: (payload: ImagePayload) => Promise<string | null>
+  copyImageToClipboard: (payload: ImagePayload) => Promise<boolean>
   copyTextToClipboard: (text: string) => Promise<boolean>
   openExternalUrl: (url: string) => Promise<boolean>
-  dismissScreenshot: (id: string) => void
+  dismissScreenshot: (filePath?: string | null) => void
   mediaAction: (action: 'play' | 'pause' | 'toggle' | 'next' | 'previous' | 'seek', value?: number) => void
   getCurrentMedia: () => Promise<any>
   getAppsStatus: () => Promise<any>
@@ -84,11 +89,11 @@ const api: DynasisAPI = {
   getAutoStart: () => ipcRenderer.invoke('get-autostart'),
   setAutoStart: (enabled: boolean) => ipcRenderer.invoke('set-autostart', enabled),
   startFileDrag: (filePath: string) => ipcRenderer.send('start-file-drag', filePath),
-  saveScreenshot: (dataUrl: string) => ipcRenderer.invoke('save-screenshot', dataUrl),
-  copyImageToClipboard: (dataUrl: string) => ipcRenderer.invoke('copy-image-to-clipboard', dataUrl),
+  saveScreenshot: (payload: ImagePayload) => ipcRenderer.invoke('save-screenshot', payload),
+  copyImageToClipboard: (payload: ImagePayload) => ipcRenderer.invoke('copy-image-to-clipboard', payload),
   copyTextToClipboard: (text: string) => ipcRenderer.invoke('copy-text-to-clipboard', text),
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
-  dismissScreenshot: (id: string) => ipcRenderer.send('dismiss-screenshot', id),
+  dismissScreenshot: (filePath?: string | null) => ipcRenderer.send('dismiss-screenshot', filePath),
   mediaAction: (action, value) => ipcRenderer.send('media-action', action, value),
   minimizeApp: () => ipcRenderer.send('app-minimize'),
   closeApp: () => ipcRenderer.send('app-close'),

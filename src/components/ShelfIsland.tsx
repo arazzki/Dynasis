@@ -18,7 +18,8 @@ export interface ScreenshotItem {
   id: string
   type?: 'image' | 'text' | 'file'
   filePath?: string
-  dataUrl: string
+  /** Small preview only (full-resolution image lives on disk at filePath). */
+  dataUrl?: string
   text?: string
   timestamp: number
   size?: { width: number; height: number }
@@ -118,8 +119,8 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
     !isText &&
     (!currentItem.name ||
       /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(currentItem.name) ||
-      currentItem.dataUrl.startsWith('data:image') ||
-      currentItem.dataUrl.startsWith('http'))
+      Boolean(currentItem.dataUrl?.startsWith('data:image')) ||
+      Boolean(currentItem.dataUrl?.startsWith('http')))
 
   return (
     <div
@@ -160,7 +161,7 @@ export const ShelfIsland: React.FC<ShelfIslandProps> = ({
             className="relative w-20 h-14 rounded-xl overflow-hidden bg-[#0e0f11] border border-white/15 shadow-md group cursor-grab active:cursor-grabbing flex-shrink-0 flex items-center justify-center"
             title="Drag keluar ke WhatsApp, Discord, Explorer, atau aplikasi lain"
           >
-            {isImage ? (
+            {isImage && currentItem.dataUrl ? (
               <img
                 src={currentItem.dataUrl}
                 alt="Preview"

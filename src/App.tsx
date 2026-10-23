@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import { Island, IslandState, NotchStyle } from './components/Island'
 import { MediaIsland, MediaState } from './components/MediaIsland'
+import { PlayingBars } from './components/PlayingBars'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
 import { BatteryHUD, BatteryState } from './components/BatteryHUD'
 
@@ -528,15 +529,6 @@ export default function App() {
     })
   }, [])
 
-  // 1B. Native Clipboard Text & Link History listener (silent background capture on Ctrl+C)
-  useEffect(() => {
-    if (!window.dynasis?.onClipboardTextCaptured) return
-    return window.dynasis.onClipboardTextCaptured((data) => {
-      const filtered = shelfItemsRef.current.filter((item) => item.text !== data.text)
-      applyShelfItems([data, ...filtered])
-    })
-  }, [])
-
   // 2. Real-time Windows SMTC Media listener (silent update in background; never forces island out of Stealth Edge!)
   useEffect(() => {
     if (!window.dynasis?.onMediaStateChanged) return
@@ -782,10 +774,6 @@ export default function App() {
   }
 
   const handleCopyScreenshot = async (item: ScreenshotItem) => {
-    if ((item.type === 'text' || item.text) && window.dynasis?.copyTextToClipboard) {
-      await window.dynasis.copyTextToClipboard(item.text || '')
-      return
-    }
     const payload = item.filePath
       ? { filePath: item.filePath }
       : item.dataUrl
@@ -933,14 +921,37 @@ export default function App() {
                   }`}
                 >
                   {media.albumArt ? (
-                    <img
-                      src={media.albumArt}
-                      alt=""
-                      className={`w-5 h-5 rounded-full object-cover flex-shrink-0 border ${
-                        media.isPlaying ? 'border-emerald-400/60' : 'border-white/15'
-                      }`}
-                      draggable={false}
-                    />
+                    <motion.div
+                      className="relative w-5 h-5 flex-shrink-0"
+                      animate={media.isPlaying ? { scale: [1, 1.08, 1] } : { scale: 1 }}
+                      transition={
+                        media.isPlaying
+                          ? { repeat: Infinity, duration: 2.2, ease: 'easeInOut' }
+                          : { duration: 0.2 }
+                      }
+                    >
+                      <motion.img
+                        src={media.albumArt}
+                        alt=""
+                        className={`w-full h-full rounded-full object-cover border ${
+                          media.isPlaying ? 'border-emerald-400/70' : 'border-white/15'
+                        }`}
+                        draggable={false}
+                        animate={media.isPlaying ? { rotate: 360 } : { rotate: 0 }}
+                        transition={
+                          media.isPlaying
+                            ? { repeat: Infinity, duration: 9, ease: 'linear' }
+                            : { duration: 0.25 }
+                        }
+                      />
+                      {media.isPlaying && (
+                        <motion.span
+                          className="pointer-events-none absolute inset-0 rounded-full border border-emerald-400/70"
+                          animate={{ opacity: [0.6, 0, 0.6], scale: [1, 1.45, 1] }}
+                          transition={{ repeat: Infinity, duration: 2.2, ease: 'easeOut' }}
+                        />
+                      )}
+                    </motion.div>
                   ) : (
                     <span
                       className={`w-2 h-2 rounded-full flex-shrink-0 ${
@@ -974,9 +985,11 @@ export default function App() {
                   </span>
                 )}
 
-                {/* Right: Quick Play/Pause on Hover (coucou pill style) OR Equalizer + Shelf + Battery */}
+                {/* Right: Equalizer + quick controls on hover + Shelf + Battery */}
                 <div className="flex items-center gap-1.5 flex-shrink-0 ml-auto">
-                  {hasActiveMedia && isHovered ? (
+                  {media.isPlaying && <PlayingBars compact />}
+
+                  {hasActiveMedia && isHovered && (
                     <div className="flex items-center gap-1">
                       <button
                         onClick={(e) => {
@@ -1003,24 +1016,6 @@ export default function App() {
                         <SkipForward className="w-2.5 h-2.5 fill-current" />
                       </button>
                     </div>
-                  ) : (
-                    media.isPlaying && (
-                      <div className="flex items-end gap-[2px] h-3">
-                        {[0, 1, 2, 3].map((i) => (
-                          <motion.span
-                            key={i}
-                            className="w-[2.2px] bg-emerald-400 rounded-full"
-                            animate={{ height: ['3px', '11px', '4px', '9px', '3px'] }}
-                            transition={{
-                              repeat: Infinity,
-                              duration: 0.65,
-                              delay: i * 0.14,
-                              ease: 'easeInOut',
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )
                   )}
 
                   {shelfItems.length > 0 && (
@@ -1247,7 +1242,7 @@ export default function App() {
                           <span className="text-[9.5px] text-[#8e939c] truncate block">
                             {shelfItems.length > 0
                               ? `${shelfItems.length} item tersimpan`
-                              : 'Ctrl+C / Win+Shift+S'}
+                              : 'Win+Shift+S / Drop file'}
                           </span>
                         </div>
                       </div>

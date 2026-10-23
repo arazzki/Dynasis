@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Play, Pause, SkipBack, SkipForward, Music } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { PlayingBars } from './PlayingBars'
 
 export interface MediaState {
   title: string
@@ -156,23 +156,7 @@ export const MediaIsland: React.FC<MediaIslandProps> = ({
         </div>
 
         {/* Animated Waveform Indicator */}
-        {media.isPlaying && (
-          <div className="flex items-end gap-[2px] h-3.5 px-1 flex-shrink-0">
-            {[0, 1, 2, 3].map((i) => (
-              <motion.span
-                key={i}
-                className="w-[2.5px] bg-emerald-400 rounded-full"
-                animate={{ height: ['3px', '13px', '5px', '11px', '4px'] }}
-                transition={{
-                  repeat: Infinity,
-                  duration: 0.75,
-                  delay: i * 0.14,
-                  ease: 'easeInOut',
-                }}
-              />
-            ))}
-          </div>
-        )}
+        {media.isPlaying && <PlayingBars className="flex-shrink-0" />}
       </div>
 
       {/* Middle Row: Coucou-style Seek / Progress Bar */}

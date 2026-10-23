@@ -85,7 +85,6 @@ if (gotTheLock) {
 }
 
 let lastClipboardImageHash = ''
-let lastClipboardText = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
 let cursorPollInterval: NodeJS.Timeout | null = null
 
@@ -1104,33 +1103,14 @@ function startClipboardWatcher() {
   try {
     const initial = clipboard.readImage()
     if (!initial.isEmpty()) lastClipboardImageHash = imageHash(initial)
-    lastClipboardText = (clipboard.readText() || '').trim()
   } catch {
     /* ignore */
   }
 
   clipboardPollInterval = setInterval(() => {
     try {
-      // 1. Check for new copied text / URLs
-      const rawText = (clipboard.readText() || '').trim()
-      if (rawText && rawText.length >= 2 && rawText !== lastClipboardText) {
-        lastClipboardText = rawText
-        const timestamp = Date.now()
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('clipboard-text-captured', {
-            id: `txt_${timestamp}`,
-            type: 'text',
-            text: rawText.slice(0, 4000),
-            name: /^https?:\/\//i.test(rawText)
-              ? `Link: ${rawText.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 32)}`
-              : `Teks: ${rawText.replace(/\s+/g, ' ').slice(0, 30)}`,
-            dataUrl: '',
-            timestamp,
-          })
-        }
-      }
-
-      // 2. Check for new screenshots / copied images
+      // The shelf is screenshot-only: copied text/links are intentionally
+      // ignored. Only new images (screenshots / copied images) are captured.
       const image = clipboard.readImage()
       if (image.isEmpty()) return
 
@@ -1568,27 +1548,6 @@ ipcMain.handle('copy-image-to-clipboard', async (_event, payload: ImagePayload) 
     console.error('Error copying image:', err)
     return false
   }
-})
-
-ipcMain.handle('copy-text-to-clipboard', async (_event, text: string) => {
-  try {
-    lastClipboardText = (text || '').trim()
-    clipboard.writeText(text || '')
-    return true
-  } catch (err) {
-    console.error('Error copying text:', err)
-    return false
-  }
-})
-
-ipcMain.handle('open-external-url', async (_event, url: string) => {
-  try {
-    if (url && /^https?:\/\//i.test(url)) {
-      await shell.openExternal(url)
-      return true
-    }
-  } catch {}
-  return false
 })
 
 ipcMain.on('dismiss-screenshot', (_event, filePath?: string | null) => {

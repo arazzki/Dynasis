@@ -37,13 +37,6 @@ const api = {
       ipcRenderer.removeListener('screenshot-captured', handler)
     }
   },
-  onClipboardTextCaptured: (callback) => {
-    const handler = (_, data) => callback(data)
-    ipcRenderer.on('clipboard-text-captured', handler)
-    return () => {
-      ipcRenderer.removeListener('clipboard-text-captured', handler)
-    }
-  },
   onMediaStateChanged: (callback) => {
     const handler = (_, data) => callback(data)
     ipcRenderer.on('media-state-changed', handler)
@@ -98,12 +91,6 @@ const api = {
   },
   copyImageToClipboard: (dataUrl) => {
     return ipcRenderer.invoke('copy-image-to-clipboard', dataUrl)
-  },
-  copyTextToClipboard: (text) => {
-    return ipcRenderer.invoke('copy-text-to-clipboard', text)
-  },
-  openExternalUrl: (url) => {
-    return ipcRenderer.invoke('open-external-url', url)
   },
   dismissScreenshot: (id) => {
     ipcRenderer.send('dismiss-screenshot', id)

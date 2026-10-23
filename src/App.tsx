@@ -14,8 +14,6 @@ import {
   Power,
   Camera,
   Play,
-  Pause,
-  SkipForward,
   AppWindow,
   MessageSquare,
   Globe,
@@ -923,32 +921,40 @@ export default function App() {
                   {media.albumArt ? (
                     <motion.div
                       className="relative w-5 h-5 flex-shrink-0"
-                      animate={media.isPlaying ? { scale: [1, 1.08, 1] } : { scale: 1 }}
+                      animate={media.isPlaying ? { scale: [1, 1.05, 1] } : { scale: 1 }}
                       transition={
                         media.isPlaying
-                          ? { repeat: Infinity, duration: 2.2, ease: 'easeInOut' }
+                          ? { repeat: Infinity, duration: 3.2, ease: 'easeInOut' }
                           : { duration: 0.2 }
                       }
                     >
+                      {/* Soft halo behind the disc (opacity-only, cheap) */}
+                      {media.isPlaying && (
+                        <motion.span
+                          className="pointer-events-none absolute -inset-1 rounded-full bg-emerald-400/35 blur-[5px]"
+                          animate={{ opacity: [0.35, 0.85, 0.35] }}
+                          transition={{ repeat: Infinity, duration: 3.2, ease: 'easeInOut' }}
+                        />
+                      )}
                       <motion.img
                         src={media.albumArt}
                         alt=""
-                        className={`w-full h-full rounded-full object-cover border ${
+                        className={`relative w-full h-full rounded-full object-cover border ${
                           media.isPlaying ? 'border-emerald-400/70' : 'border-white/15'
                         }`}
                         draggable={false}
                         animate={media.isPlaying ? { rotate: 360 } : { rotate: 0 }}
                         transition={
                           media.isPlaying
-                            ? { repeat: Infinity, duration: 9, ease: 'linear' }
-                            : { duration: 0.25 }
+                            ? { repeat: Infinity, duration: 14, ease: 'linear' }
+                            : { duration: 0.3 }
                         }
                       />
                       {media.isPlaying && (
                         <motion.span
-                          className="pointer-events-none absolute inset-0 rounded-full border border-emerald-400/70"
-                          animate={{ opacity: [0.6, 0, 0.6], scale: [1, 1.45, 1] }}
-                          transition={{ repeat: Infinity, duration: 2.2, ease: 'easeOut' }}
+                          className="pointer-events-none absolute inset-0 rounded-full border border-emerald-300/60"
+                          animate={{ opacity: [0.5, 0, 0.5], scale: [1, 1.35, 1] }}
+                          transition={{ repeat: Infinity, duration: 3.2, ease: 'easeOut' }}
                         />
                       )}
                     </motion.div>
@@ -985,38 +991,9 @@ export default function App() {
                   </span>
                 )}
 
-                {/* Right: Equalizer + quick controls on hover + Shelf + Battery */}
+                {/* Right: Equalizer + Shelf + Battery. Media controls live in the expanded card. */}
                 <div className="flex items-center gap-1.5 flex-shrink-0 ml-auto">
                   {media.isPlaying && <PlayingBars compact />}
-
-                  {hasActiveMedia && isHovered && (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleMediaAction(media.isPlaying ? 'pause' : 'play')
-                        }}
-                        className="w-5 h-5 rounded-full bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 flex items-center justify-center text-emerald-300 transition-colors"
-                        title={media.isPlaying ? 'Pause' : 'Play'}
-                      >
-                        {media.isPlaying ? (
-                          <Pause className="w-2.5 h-2.5 fill-current" />
-                        ) : (
-                          <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
-                        )}
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleMediaAction('next')
-                        }}
-                        className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 flex items-center justify-center text-white transition-colors"
-                        title="Next Track"
-                      >
-                        <SkipForward className="w-2.5 h-2.5 fill-current" />
-                      </button>
-                    </div>
-                  )}
 
                   {shelfItems.length > 0 && (
                     <button

@@ -8,7 +8,7 @@
 # stdout must stay clean: only JSON lines are written there.
 
 param (
-    [int]$IntervalMs = 900
+    [int]$IntervalMs = 1200
 )
 
 $ErrorActionPreference = 'SilentlyContinue'

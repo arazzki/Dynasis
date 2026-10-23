@@ -462,6 +462,7 @@ export default function App() {
           artist: data.artist || 'Unknown Artist',
           albumTitle: data.albumTitle || '',
           albumArt: data.albumArt || undefined,
+          trackKey: data.trackKey || undefined,
           isPlaying: data.status === 'Playing',
           duration: Number(data.duration) || 0,
           position: Number(data.position) || 0,
@@ -546,17 +547,24 @@ export default function App() {
     return window.dynasis.onMediaStateChanged((data) => {
       if (data && data.hasMedia) {
         const isPlaying = data.status === 'Playing'
-        setMedia((prev) => ({
-          title: data.title || 'Unknown Title',
-          artist: data.artist || 'Unknown Artist',
-          albumTitle: data.albumTitle || '',
-          albumArt: data.albumArt || prev.albumArt,
-          isPlaying,
-          duration: Number(data.duration) || 0,
-          position: Number(data.position) || 0,
-          updatedAt: Date.now(),
-          appId: data.appId || prev.appId,
-        }))
+        setMedia((prev) => {
+          const trackChanged =
+            Boolean(data.trackKey) && data.trackKey !== prev.trackKey
+          return {
+            title: data.title || 'Unknown Title',
+            artist: data.artist || 'Unknown Artist',
+            albumTitle: data.albumTitle || '',
+            // Live updates omit album art (it is only sent once per track).
+            // Keep the current art unless the track actually changed.
+            albumArt: data.albumArt || (trackChanged ? undefined : prev.albumArt),
+            trackKey: data.trackKey || prev.trackKey,
+            isPlaying,
+            duration: Number(data.duration) || 0,
+            position: Number(data.position) || 0,
+            updatedAt: Date.now(),
+            appId: data.appId || prev.appId,
+          }
+        })
       } else {
         setMedia((m) => ({ ...m, isPlaying: false }))
       }

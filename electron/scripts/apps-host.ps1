@@ -5,7 +5,7 @@
 # JSON on stdout only when the status snapshot actually changes.
 
 param (
-    [int]$IntervalMs = 3000
+    [int]$IntervalMs = 4000
 )
 
 $ErrorActionPreference = 'SilentlyContinue'

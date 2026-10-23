@@ -101,6 +101,8 @@ let appsHost: HostProcess | null = null
 let mediaHostRestartTimer: NodeJS.Timeout | null = null
 let appsHostRestartTimer: NodeJS.Timeout | null = null
 let lastMediaState: any = null
+let lastMediaTrackKey = ''
+let cachedAlbumArt: string | undefined
 let lastAppsSnapshot: any = null
 
 // Current active island bounding box in window-logical coordinates (starts in Stealth Edge hidden mode)
@@ -251,6 +253,13 @@ function parseJsonLine(line: string): any | null {
   }
 }
 
+// Full snapshot (with album art) for first paint / renderer reloads only.
+// Live updates intentionally omit the base64 art.
+function getMediaSnapshot() {
+  if (!lastMediaState) return { hasMedia: false }
+  return cachedAlbumArt ? { ...lastMediaState, albumArt: cachedAlbumArt } : lastMediaState
+}
+
 function scheduleHostRestart(kind: 'media' | 'apps') {
   if (isQuittingApp) return
   if (kind === 'media') {
@@ -296,16 +305,34 @@ function startMediaHost() {
     const data = parseJsonLine(line)
     if (!data) return
     if (data.hasMedia) {
-      // Album art is only transmitted when the track changes; reuse the last copy.
-      if (!data.albumArt && lastMediaState?.albumArt) {
-        data.albumArt = lastMediaState.albumArt
+      // The host only sends album art when the track changes. Keep our own
+      // copy for renderer reloads, but never re-attach the ~200 KB base64
+      // string to the ~1 Hz position/status updates.
+      const hasArt = typeof data.albumArt === 'string'
+      const trackChanged = Boolean(data.trackKey) && data.trackKey !== lastMediaTrackKey
+
+      if (trackChanged) {
+        lastMediaTrackKey = data.trackKey
+        cachedAlbumArt = hasArt ? data.albumArt : undefined
+      } else if (hasArt) {
+        cachedAlbumArt = data.albumArt
       }
-      lastMediaState = data
+
+      const { albumArt, ...live } = data
+      lastMediaState = live
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(
+          'media-state-changed',
+          hasArt ? { ...live, albumArt } : live
+        )
+      }
     } else {
-      lastMediaState = { ...(lastMediaState || {}), hasMedia: false, albumArt: undefined }
-    }
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('media-state-changed', data)
+      lastMediaTrackKey = ''
+      cachedAlbumArt = undefined
+      lastMediaState = { ...(lastMediaState || {}), hasMedia: false }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('media-state-changed', lastMediaState)
+      }
     }
   })
 
@@ -969,7 +996,7 @@ function createWindow() {
   // When webContents is ready, replay the latest host snapshots (if any)
   mainWindow.webContents.on('did-finish-load', () => {
     if (lastMediaState && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('media-state-changed', lastMediaState)
+      mainWindow.webContents.send('media-state-changed', getMediaSnapshot())
     }
     if (lastAppsSnapshot && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('apps-state-changed', lastAppsSnapshot)
@@ -1378,7 +1405,7 @@ function openOrFocusWhatsAppWebBridge(showWindow = true) {
 
 // IPC Handlers
 ipcMain.handle('get-current-media', async () => {
-  return lastMediaState || { hasMedia: false }
+  return getMediaSnapshot()
 })
 
 ipcMain.handle('get-apps-status', async () => {

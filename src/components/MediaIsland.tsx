@@ -7,6 +7,7 @@ export interface MediaState {
   artist: string
   albumTitle?: string
   albumArt?: string
+  trackKey?: string
   isPlaying: boolean
   duration: number
   position: number

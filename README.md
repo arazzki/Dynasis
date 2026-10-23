@@ -145,4 +145,5 @@ Untuk detail teknis lebih mendalam seputar arsitektur *hit-test*, *event loop*, 
 ---
 
 ## 📄 Lisensi
-Proyek ini dilisensikan di bawah [MIT License](LICENSE).
+Proyek ini dilisensikan di bawah [MIT License](LICENSE).  
+Lihat [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) untuk lisensi pustaka pihak ketiga dan pengakuan hak cipta.

@@ -18,7 +18,6 @@ export interface DynasisAPI {
   onScreenshotCaptured: (callback: (data: { id: string; type?: 'image' | 'text' | 'file'; filePath?: string; dataUrl: string; text?: string; name?: string; timestamp: number; size?: { width: number; height: number } }) => void) => () => void
   onClipboardTextCaptured: (callback: (data: { id: string; type: 'text'; text: string; name: string; dataUrl: string; timestamp: number }) => void) => () => void
   onMediaStateChanged: (callback: (media: any) => void) => () => void
-  onBatteryStateChanged: (callback: (battery: any) => void) => () => void
   onAppsStateChanged: (callback: (data: any) => void) => () => void
   onWhatsAppNotification: (callback: (notif: { id: string; sender: string; message: string; source: string; timestamp: number }) => void) => () => void
   startFileDrag: (filePath: string) => void
@@ -29,7 +28,6 @@ export interface DynasisAPI {
   dismissScreenshot: (id: string) => void
   mediaAction: (action: 'play' | 'pause' | 'toggle' | 'next' | 'previous' | 'seek', value?: number) => void
   getCurrentMedia: () => Promise<any>
-  getCurrentBattery: () => Promise<any>
   getAppsStatus: () => Promise<any>
   appAction: (target: string, command?: string) => Promise<any>
   getAutoStart: () => Promise<boolean>
@@ -70,11 +68,6 @@ const api: DynasisAPI = {
     ipcRenderer.on('media-state-changed', handler)
     return () => ipcRenderer.removeListener('media-state-changed', handler)
   },
-  onBatteryStateChanged: (callback) => {
-    const handler = (_: any, data: any) => callback(data)
-    ipcRenderer.on('battery-state-changed', handler)
-    return () => ipcRenderer.removeListener('battery-state-changed', handler)
-  },
   onAppsStateChanged: (callback) => {
     const handler = (_: any, data: any) => callback(data)
     ipcRenderer.on('apps-state-changed', handler)
@@ -86,7 +79,6 @@ const api: DynasisAPI = {
     return () => ipcRenderer.removeListener('wa-notification', handler)
   },
   getCurrentMedia: () => ipcRenderer.invoke('get-current-media'),
-  getCurrentBattery: () => ipcRenderer.invoke('get-current-battery'),
   getAppsStatus: () => ipcRenderer.invoke('get-apps-status'),
   appAction: (target: string, command = 'open') => ipcRenderer.invoke('app-action', { target, command }),
   getAutoStart: () => ipcRenderer.invoke('get-autostart'),

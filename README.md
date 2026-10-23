@@ -73,10 +73,11 @@ Dynasis/
 │   ├── main.ts                       # Main process Electron (60Hz hit-test, Tray, IPC, Auto-Start, Watchers)
 │   ├── preload.cjs / preload.ts      # Context bridge aman (window.dynasis API)
 │   └── scripts/
-│       ├── get-media.ps1             # Pembaca media & sampul album via WinRT SMTC
-│       ├── control-media.ps1         # Kontrol Play/Pause/Next/Prev/Seek via WinRT SMTC
-│       ├── get-battery.ps1           # Pembaca status baterai & pengisian daya
-│       └── manage-apps.ps1           # Sinkronisasi aplikasi, peluncur Spotify, Notif WA Web & SEB Guard
+│       ├── media-host.ps1            # Host SMTC persisten (1 proses, tanpa spawn berulang)
+│       ├── apps-host.ps1             # Host status aplikasi + WA + SEB guard persisten
+│       ├── manage-apps-lib.ps1       # Library Win32/UIA/notifikasi bersama
+│       ├── manage-apps.ps1           # Aksi buka/fokus aplikasi & kontrol volume
+│       └── control-media.ps1         # Kontrol Play/Pause/Next/Prev/Seek saat diklik
 ├── src/
 │   ├── App.tsx                       # Kontainer utama Dynamic Island (Overview, Apps, Media, Shelf, Settings)
 │   └── components/

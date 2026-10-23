@@ -16,11 +16,15 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import zlib from 'zlib'
-import { execFile, execFileSync } from 'child_process'
+import { execFile, execFileSync, spawn, type ChildProcessByStdio } from 'child_process'
+import { createInterface } from 'readline'
+import type { Readable } from 'stream'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+type HostProcess = ChildProcessByStdio<null, Readable, Readable>
 
 // Fixed canvas size (coucou architecture: never clips spring animations, click-through outside islandRect)
 const PANEL_W = 680
@@ -56,21 +60,22 @@ app.on('second-instance', () => {
 let lastClipboardImageHash = ''
 let lastClipboardText = ''
 let clipboardPollInterval: NodeJS.Timeout | null = null
-let mediaPollInterval: NodeJS.Timeout | null = null
-let batteryPollInterval: NodeJS.Timeout | null = null
-let appsPollInterval: NodeJS.Timeout | null = null
 let cursorPollInterval: NodeJS.Timeout | null = null
 
-let lastMediaSignature = ''
-let lastTrackKey = ''
-let cachedAlbumArt: string | null = null
-let lastBatterySignature = ''
 let lastAppsSignature = ''
 let lastWaToastId = ''
 let lastWaTabUnread = 0
 let lastWaBridgeUnread = 0
 let lastWaNotifFiredAt = 0
 let initializedWaNotif = false
+
+// Persistent PowerShell hosts (one long-lived process each, JSON lines on stdout)
+let mediaHost: HostProcess | null = null
+let appsHost: HostProcess | null = null
+let mediaHostRestartTimer: NodeJS.Timeout | null = null
+let appsHostRestartTimer: NodeJS.Timeout | null = null
+let lastMediaState: any = null
+let lastAppsSnapshot: any = null
 
 // Current active island bounding box in window-logical coordinates (starts in Stealth Edge hidden mode)
 let islandRect = {
@@ -145,31 +150,219 @@ function runPowerShellScript(scriptName: string, args: string[] = []): Promise<s
   })
 }
 
-async function fetchMediaState(forceFreshArt = false): Promise<any | null> {
+function parseJsonLine(line: string): any | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
   try {
-    const canUseCache = !forceFreshArt && Boolean(lastTrackKey && cachedAlbumArt)
-    const args = canUseCache ? ['-LastTrackKey', lastTrackKey] : []
-    const output = await runPowerShellScript('get-media.ps1', args)
-    if (!output) return null
-    const data = JSON.parse(output)
-    if (data.hasMedia) {
-      if (data.albumArtCached && cachedAlbumArt) {
-        data.albumArt = cachedAlbumArt
-      } else if (data.albumArt) {
-        cachedAlbumArt = data.albumArt
-      }
-      if (data.trackKey) {
-        lastTrackKey = data.trackKey
-      }
-    } else {
-      lastTrackKey = ''
-      cachedAlbumArt = null
-    }
-    return data
+    return JSON.parse(trimmed)
   } catch {
     return null
   }
 }
+
+function scheduleHostRestart(kind: 'media' | 'apps') {
+  if (isQuittingApp) return
+  if (kind === 'media') {
+    if (mediaHostRestartTimer) return
+    mediaHostRestartTimer = setTimeout(() => {
+      mediaHostRestartTimer = null
+      startMediaHost()
+    }, 2000)
+  } else {
+    if (appsHostRestartTimer) return
+    appsHostRestartTimer = setTimeout(() => {
+      appsHostRestartTimer = null
+      startAppsHost()
+    }, 2000)
+  }
+}
+
+function startMediaHost() {
+  if (mediaHost || isQuittingApp) return
+
+  let child: HostProcess
+  try {
+    child = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        getScriptPath('media-host.ps1'),
+      ],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+  } catch (err) {
+    console.error('Failed to start media host:', err)
+    scheduleHostRestart('media')
+    return
+  }
+
+  mediaHost = child
+  createInterface({ input: child.stdout }).on('line', (line) => {
+    const data = parseJsonLine(line)
+    if (!data) return
+    if (data.hasMedia) {
+      // Album art is only transmitted when the track changes; reuse the last copy.
+      if (!data.albumArt && lastMediaState?.albumArt) {
+        data.albumArt = lastMediaState.albumArt
+      }
+      lastMediaState = data
+    } else {
+      lastMediaState = { ...(lastMediaState || {}), hasMedia: false, albumArt: undefined }
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('media-state-changed', data)
+    }
+  })
+
+  child.stderr.on('data', (buf) => {
+    const text = String(buf).trim()
+    if (text) console.error('[media-host]', text)
+  })
+  child.on('error', (err) => console.error('[media-host] error:', err))
+  child.on('exit', (code) => {
+    mediaHost = null
+    if (!isQuittingApp) {
+      console.error(`[media-host] exited (code ${code}); restarting in 2s`)
+      scheduleHostRestart('media')
+    }
+  })
+}
+
+function handleAppsPayload(data: any) {
+  if (!data) return
+
+  // Safe Exam Browser (SEB) Guard: immediately self-terminate if SEB starts!
+  if (data.sebDetected) {
+    isQuittingApp = true
+    stopHosts()
+    globalShortcut.unregisterAll()
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
+    if (waWindow && !waWindow.isDestroyed()) {
+      waWindow.destroy()
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.destroy()
+    }
+    app.exit(0)
+    return
+  }
+
+  const currentTabUnread = typeof data?.waTabUnread === 'number' ? data.waTabUnread : 0
+  const toastNotif =
+    data?.waNotif?.hasNotif && String(data.waNotif.id).startsWith('toast_')
+      ? data.waNotif
+      : null
+
+  if (!initializedWaNotif) {
+    // Seed existing toast & unread count on boot so historical notifications don't replay
+    initializedWaNotif = true
+    lastWaToastId = toastNotif ? String(toastNotif.id) : ''
+    lastWaTabUnread = currentTabUnread
+  } else {
+    if (toastNotif && String(toastNotif.id) !== lastWaToastId) {
+      lastWaToastId = String(toastNotif.id)
+      dispatchWhatsAppNotification({
+        id: String(toastNotif.id),
+        sender: toastNotif.sender || 'WhatsApp Web',
+        message: toastNotif.message || 'Pesan baru masuk',
+        source: toastNotif.source || 'WhatsApp Web',
+      })
+    }
+    if (currentTabUnread > lastWaTabUnread) {
+      lastWaTabUnread = currentTabUnread
+      dispatchWhatsAppNotification({
+        id: `tab_unread_${Date.now()}_${currentTabUnread}`,
+        sender: 'WhatsApp Web',
+        message: `${currentTabUnread} pesan baru belum dibaca di WhatsApp Web`,
+        source: 'WhatsApp Web',
+      })
+    } else if (currentTabUnread < lastWaTabUnread) {
+      lastWaTabUnread = currentTabUnread
+    }
+  }
+
+  data.waBridgeActive = Boolean(waWindow && !waWindow.isDestroyed())
+  lastAppsSnapshot = data
+  const nextSig = JSON.stringify(data)
+  if (nextSig !== lastAppsSignature) {
+    lastAppsSignature = nextSig
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('apps-state-changed', data)
+    }
+  }
+}
+
+function startAppsHost() {
+  if (appsHost || isQuittingApp) return
+
+  let child: HostProcess
+  try {
+    child = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        getScriptPath('apps-host.ps1'),
+      ],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+  } catch (err) {
+    console.error('Failed to start apps host:', err)
+    scheduleHostRestart('apps')
+    return
+  }
+
+  appsHost = child
+  createInterface({ input: child.stdout }).on('line', (line) => {
+    handleAppsPayload(parseJsonLine(line))
+  })
+
+  child.stderr.on('data', (buf) => {
+    const text = String(buf).trim()
+    if (text) console.error('[apps-host]', text)
+  })
+  child.on('error', (err) => console.error('[apps-host] error:', err))
+  child.on('exit', (code) => {
+    appsHost = null
+    if (!isQuittingApp) {
+      console.error(`[apps-host] exited (code ${code}); restarting in 2s`)
+      scheduleHostRestart('apps')
+    }
+  })
+}
+
+function stopHosts() {
+  if (mediaHostRestartTimer) {
+    clearTimeout(mediaHostRestartTimer)
+    mediaHostRestartTimer = null
+  }
+  if (appsHostRestartTimer) {
+    clearTimeout(appsHostRestartTimer)
+    appsHostRestartTimer = null
+  }
+  for (const host of [mediaHost, appsHost]) {
+    if (host && !host.killed) {
+      try {
+        host.kill()
+      } catch {
+        // Already gone
+      }
+    }
+  }
+  mediaHost = null
+  appsHost = null
+}
+
 
 /**
  * Generates a crisp 32x32 RGBA PNG icon in-memory for the Windows System Tray
@@ -355,7 +548,7 @@ using System.Diagnostics;
 using System.Reflection;
 
 [assembly: AssemblyTitle("Dynasis")]
-[assembly: AssemblyDescription("Dynasis — Dynamic System Island")]
+[assembly: AssemblyDescription("Dynasis â€” Dynamic System Island")]
 [assembly: AssemblyCompany("arazzki")]
 [assembly: AssemblyProduct("Dynasis")]
 [assembly: AssemblyVersion("1.0.0.0")]
@@ -504,7 +697,7 @@ function setAutoStartEnabled(enabled: boolean): boolean {
       shell.writeShortcutLink(lnkPath, 'create', {
         target: launcherPath,
         cwd: path.dirname(process.execPath),
-        description: 'Dynasis — Dynamic System Island',
+        description: 'Dynasis â€” Dynamic System Island',
         icon: launcherPath,
         iconIndex: 0,
         appUserModelId: 'Dynasis',
@@ -540,7 +733,7 @@ function updateTrayMenu() {
   const isAutoStart = getAutoStartEnabled()
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Dynasis — Dynamic System Island',
+      label: 'Dynasis â€” Dynamic System Island',
       enabled: false,
     },
     { type: 'separator' },
@@ -615,7 +808,7 @@ function setupSystemTray() {
   if (tray) return
   try {
     tray = new Tray(createTrayIcon())
-    tray.setToolTip('Dynasis — Dynamic System Island (Alt+\\)')
+    tray.setToolTip('Dynasis â€” Dynamic System Island (Alt+\\)')
     updateTrayMenu()
     tray.on('click', () => {
       if (!mainWindow || mainWindow.isDestroyed()) return
@@ -682,28 +875,21 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  // When webContents is ready, send initial system state
-  mainWindow.webContents.on('did-finish-load', async () => {
-    try {
-      const mediaData = await fetchMediaState(true)
-      if (mediaData && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('media-state-changed', mediaData)
-      }
-      const batteryOut = await runPowerShellScript('get-battery.ps1')
-      if (batteryOut && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('battery-state-changed', JSON.parse(batteryOut))
-      }
-    } catch (err) {
-      console.error('Initial state dispatch error:', err)
+  // When webContents is ready, replay the latest host snapshots (if any)
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (lastMediaState && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('media-state-changed', lastMediaState)
+    }
+    if (lastAppsSnapshot && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('apps-state-changed', lastAppsSnapshot)
     }
   })
 
   // Start background services
   startCursorPoll()
   startClipboardWatcher()
-  startMediaWatcher()
-  startBatteryWatcher()
-  startAppsWatcher()
+  startMediaHost()
+  startAppsHost()
 }
 
 /**
@@ -884,64 +1070,6 @@ function startClipboardWatcher() {
   }, 800)
 }
 
-function startMediaWatcher() {
-  let busy = false
-  const checkMedia = async () => {
-    if (busy) return
-    busy = true
-    try {
-      const data = await fetchMediaState()
-      if (data) {
-        const sig = JSON.stringify({
-          hasMedia: data.hasMedia,
-          title: data.title,
-          artist: data.artist,
-          status: data.status,
-          duration: data.duration,
-          position: Math.round(data.position || 0),
-          hasArt: Boolean(data.albumArt),
-        })
-        if (sig !== lastMediaSignature) {
-          lastMediaSignature = sig
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('media-state-changed', data)
-          }
-        }
-      }
-    } catch {
-      // Ignore transient errors
-    } finally {
-      busy = false
-    }
-  }
-
-  mediaPollInterval = setInterval(checkMedia, 1200)
-}
-
-function startBatteryWatcher() {
-  let busy = false
-  const checkBattery = async () => {
-    if (busy) return
-    busy = true
-    try {
-      const output = await runPowerShellScript('get-battery.ps1')
-      if (output && output !== lastBatterySignature) {
-        lastBatterySignature = output
-        const data = JSON.parse(output)
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('battery-state-changed', data)
-        }
-      }
-    } catch {
-      // Ignore transient errors
-    } finally {
-      busy = false
-    }
-  }
-
-  batteryPollInterval = setInterval(checkBattery, 4000)
-}
-
 function dispatchWhatsAppNotification(payload: {
   id: string
   sender: string
@@ -1007,7 +1135,7 @@ function openOrFocusWhatsAppWebBridge(showWindow = true) {
   })
 
   waWindow = new BrowserWindow({
-    title: 'Dynasis — WhatsApp Web Sync (Tutup [X] agar tetap sinkron di latar belakang)',
+    title: 'Dynasis â€” WhatsApp Web Sync (Tutup [X] agar tetap sinkron di latar belakang)',
     icon: createTrayIcon(),
     width: 1020,
     height: 700,
@@ -1155,103 +1283,18 @@ function openOrFocusWhatsAppWebBridge(showWindow = true) {
   return waWindow
 }
 
-function startAppsWatcher() {
-  let busy = false
-  const checkApps = async () => {
-    if (busy) return
-    busy = true
-    try {
-      const output = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
-      if (output) {
-        const data = JSON.parse(output)
-        // Safe Exam Browser (SEB) Guard: immediately self-terminate if SEB starts!
-        if (data && data.sebDetected) {
-          isQuittingApp = true
-          globalShortcut.unregisterAll()
-          if (tray) {
-            tray.destroy()
-            tray = null
-          }
-          if (waWindow && !waWindow.isDestroyed()) {
-            waWindow.destroy()
-          }
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.destroy()
-          }
-          app.exit(0)
-          return
-        }
-
-        const currentTabUnread = typeof data?.waTabUnread === 'number' ? data.waTabUnread : 0
-        const toastNotif =
-          data?.waNotif?.hasNotif && String(data.waNotif.id).startsWith('toast_')
-            ? data.waNotif
-            : null
-
-        if (!initializedWaNotif) {
-          // Seed existing toast & unread count on boot so historical notifications don't replay
-          initializedWaNotif = true
-          lastWaToastId = toastNotif ? String(toastNotif.id) : ''
-          lastWaTabUnread = currentTabUnread
-        } else {
-          if (toastNotif && String(toastNotif.id) !== lastWaToastId) {
-            lastWaToastId = String(toastNotif.id)
-            dispatchWhatsAppNotification({
-              id: String(toastNotif.id),
-              sender: toastNotif.sender || 'WhatsApp Web',
-              message: toastNotif.message || 'Pesan baru masuk',
-              source: toastNotif.source || 'WhatsApp Web',
-            })
-          }
-          if (currentTabUnread > lastWaTabUnread) {
-            lastWaTabUnread = currentTabUnread
-            dispatchWhatsAppNotification({
-              id: `tab_unread_${Date.now()}_${currentTabUnread}`,
-              sender: 'WhatsApp Web',
-              message: `${currentTabUnread} pesan baru belum dibaca di WhatsApp Web`,
-              source: 'WhatsApp Web',
-            })
-          } else if (currentTabUnread < lastWaTabUnread) {
-            lastWaTabUnread = currentTabUnread
-          }
-        }
-
-        data.waBridgeActive = Boolean(waWindow && !waWindow.isDestroyed())
-        const nextSig = JSON.stringify(data)
-        if (nextSig !== lastAppsSignature) {
-          lastAppsSignature = nextSig
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('apps-state-changed', data)
-          }
-        }
-      }
-    } catch {
-      // Ignore transient errors
-    } finally {
-      busy = false
-    }
-  }
-
-  appsPollInterval = setInterval(checkApps, 2000)
-}
-
 // IPC Handlers
 ipcMain.handle('get-current-media', async () => {
-  const data = await fetchMediaState(true)
-  return data || { hasMedia: false }
-})
-
-ipcMain.handle('get-current-battery', async () => {
-  try {
-    const output = await runPowerShellScript('get-battery.ps1')
-    if (output) return JSON.parse(output)
-  } catch (err) {
-    console.error('get-current-battery error:', err)
-  }
-  return { hasBattery: false }
+  return lastMediaState || { hasMedia: false }
 })
 
 ipcMain.handle('get-apps-status', async () => {
+  if (lastAppsSnapshot) {
+    return {
+      ...lastAppsSnapshot,
+      waBridgeActive: Boolean(waWindow && !waWindow.isDestroyed()),
+    }
+  }
   try {
     const output = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
     if (output) {
@@ -1294,24 +1337,7 @@ ipcMain.handle('app-action', async (_event, payload: { target: string; command?:
       '-Command',
       command,
     ])
-    // Refresh app status & media state right after action
-    setTimeout(async () => {
-      try {
-        const appsOut = await runPowerShellScript('manage-apps.ps1', ['-Mode', 'status'])
-        if (appsOut && mainWindow && !mainWindow.isDestroyed()) {
-          const parsed = JSON.parse(appsOut)
-          parsed.waBridgeActive = Boolean(waWindow && !waWindow.isDestroyed())
-          lastAppsSignature = JSON.stringify(parsed)
-          mainWindow.webContents.send('apps-state-changed', parsed)
-        }
-        if (target === 'spotify') {
-          const mediaData = await fetchMediaState(true)
-          if (mediaData && mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('media-state-changed', mediaData)
-          }
-        }
-      } catch {}
-    }, 600)
+    // Persisted hosts pick up the change on their next tick (media ~0.7s, apps ~2s)
     return output ? JSON.parse(output) : { success: true }
   } catch (err) {
     console.error('app-action error:', err)
@@ -1347,12 +1373,7 @@ ipcMain.on('media-action', async (_event, action: string, value?: number) => {
   try {
     const args = value !== undefined ? [action, String(value)] : [action]
     await runPowerShellScript('control-media.ps1', args)
-    setTimeout(async () => {
-      const data = await fetchMediaState()
-      if (data && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('media-state-changed', data)
-      }
-    }, 200)
+    // media-host.ps1 emits the refreshed state on its next tick (~0.7s)
   } catch (err) {
     console.error('Media action error:', err)
   }
@@ -1449,6 +1470,8 @@ app.whenReady().then(() => {
 })
 
 app.on('will-quit', () => {
+  isQuittingApp = true
+  stopHosts()
   globalShortcut.unregisterAll()
   if (tray) {
     tray.destroy()
@@ -1459,10 +1482,9 @@ app.on('will-quit', () => {
 app.on('window-all-closed', () => {
   if (cursorPollInterval) clearInterval(cursorPollInterval)
   if (clipboardPollInterval) clearInterval(clipboardPollInterval)
-  if (mediaPollInterval) clearInterval(mediaPollInterval)
-  if (batteryPollInterval) clearInterval(batteryPollInterval)
-  if (appsPollInterval) clearInterval(appsPollInterval)
+  stopHosts()
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
+

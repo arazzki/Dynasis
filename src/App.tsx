@@ -64,6 +64,15 @@ const DEFAULT_PREFS: DynasisPreferences = {
 
 const PREFS_STORAGE_KEY = 'dynasis_prefs_v3'
 
+interface BatteryLike {
+  level: number
+  charging: boolean
+  addEventListener: (type: 'levelchange' | 'chargingchange', listener: () => void) => void
+  removeEventListener: (type: 'levelchange' | 'chargingchange', listener: () => void) => void
+}
+
+type NavigatorWithBattery = Navigator & { getBattery?: () => Promise<BatteryLike> }
+
 function loadPrefs(): DynasisPreferences {
   try {
     const raw = localStorage.getItem(PREFS_STORAGE_KEY)
@@ -401,15 +410,6 @@ export default function App() {
       }
     })
 
-    window.dynasis?.getCurrentBattery?.().then((data) => {
-      if (data && data.hasBattery) {
-        setBattery({
-          level: data.level,
-          isCharging: data.isCharging,
-        })
-      }
-    })
-
     window.dynasis?.getAutoStart?.().then((on) => {
       setAutoStart(Boolean(on))
     })
@@ -513,32 +513,60 @@ export default function App() {
     })
   }, [])
 
-  // 3. Real-time Battery & Charger listener
+  // 3. Battery via Chromium Battery Status API (event-driven, zero process spawns)
   const prevChargingRef = useRef<boolean | null>(null)
   useEffect(() => {
-    if (!window.dynasis?.onBatteryStateChanged) return
-    return window.dynasis.onBatteryStateChanged((data) => {
-      if (data && data.hasBattery) {
-        setBattery({
-          level: data.level,
-          isCharging: data.isCharging,
-        })
-        const prev = prevChargingRef.current
-        prevChargingRef.current = data.isCharging
-        if (prev !== null && prev !== data.isCharging && stateRef.current !== 'expanded') {
-          setIslandState('battery')
-          setTimeout(() => {
-            if (stateRef.current === 'battery') {
-              if (prefsRef.current.autoHideToEdge) {
-                enterStealthEdge()
-              } else {
-                setIslandState('compact')
-              }
+    const getBattery = (navigator as NavigatorWithBattery).getBattery
+    if (!getBattery) return
+
+    let battery: BatteryLike | null = null
+    let disposed = false
+    let batteryPopupTimer: ReturnType<typeof setTimeout> | null = null
+
+    const sync = () => {
+      if (!battery || disposed) return
+      setBattery({
+        level: Math.round(battery.level * 100),
+        isCharging: battery.charging,
+      })
+
+      const prev = prevChargingRef.current
+      prevChargingRef.current = battery.charging
+      if (prev !== null && prev !== battery.charging && stateRef.current !== 'expanded') {
+        setIslandState('battery')
+        batteryPopupTimer = setTimeout(() => {
+          if (stateRef.current === 'battery') {
+            if (prefsRef.current.autoHideToEdge) {
+              enterStealthEdge()
+            } else {
+              setIslandState('compact')
             }
-          }, 3000)
-        }
+          }
+        }, 3000)
       }
-    })
+    }
+
+    getBattery
+      .call(navigator)
+      .then((b) => {
+        if (disposed) return
+        battery = b
+        sync()
+        b.addEventListener('levelchange', sync)
+        b.addEventListener('chargingchange', sync)
+      })
+      .catch(() => {
+        // Battery Status API unavailable: keep the neutral default
+      })
+
+    return () => {
+      disposed = true
+      if (batteryPopupTimer) clearTimeout(batteryPopupTimer)
+      if (battery) {
+        battery.removeEventListener('levelchange', sync)
+        battery.removeEventListener('chargingchange', sync)
+      }
+    }
   }, [])
 
   // Window Dragging (via Move button or Alt+Drag / Middle-Click)

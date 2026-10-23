@@ -41,6 +41,8 @@ app.commandLine.appendSwitch('disable-gpu-program-cache')
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
+  // Exit immediately instead of app.quit(): quitting would still run
+  // will-quit and could delete the primary instance's screenshot temp files.
   app.exit(0)
 }
 
@@ -48,14 +50,39 @@ let mainWindow: BrowserWindow | null = null
 let waWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuittingApp = false
+let pendingSecondInstance = false
 
-app.on('second-instance', () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (!mainWindow.isVisible()) mainWindow.show()
-    mainWindow.setAlwaysOnTop(true, 'screen-saver')
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    // Second launch raced the first instance's startup; replay after the
+    // window has loaded (see did-finish-load below).
+    pendingSecondInstance = true
+    return
+  }
+
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+
+  mainWindow.setAlwaysOnTop(true, 'screen-saver')
+  app.focus({ steal: true })
+  mainWindow.focus()
+
+  const sendOpen = () => {
+    if (isQuittingApp || !mainWindow || mainWindow.isDestroyed()) return
     mainWindow.webContents.send('tray-command', 'open')
   }
-})
+
+  sendOpen()
+  // On a cold start the renderer may still be mounting its IPC listener;
+  // replay once after React has attached.
+  setTimeout(sendOpen, 400)
+}
+
+if (gotTheLock) {
+  app.on('second-instance', () => {
+    focusMainWindow()
+  })
+}
 
 let lastClipboardImageHash = ''
 let lastClipboardText = ''
@@ -155,7 +182,10 @@ function pruneTempScreenshots(maxFiles = 40) {
   }
 }
 
-clearTempScreenshotDir()
+// Never let a rejected second instance touch the running instance's files.
+if (gotTheLock) {
+  clearTempScreenshotDir()
+}
 
 function isPhysicalPath(p: string): boolean {
   const lower = p.toLowerCase()
@@ -945,6 +975,10 @@ function createWindow() {
     if (lastAppsSnapshot && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('apps-state-changed', lastAppsSnapshot)
     }
+    if (pendingSecondInstance) {
+      pendingSecondInstance = false
+      setTimeout(focusMainWindow, 300)
+    }
   })
 
   // Start background services
@@ -1572,6 +1606,7 @@ ipcMain.on('app-close', () => {
 })
 
 app.whenReady().then(() => {
+  if (!gotTheLock) return
   app.setAppUserModelId('com.dynasis.island')
   migrateAutoStartRegistry()
   setupSystemTray()

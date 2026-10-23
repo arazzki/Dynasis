@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react'
 import { motion } from 'framer-motion'
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion'
 
 export type IslandState = 'hidden' | 'compact' | 'expanded' | 'battery'
 export type NotchStyle = 'notch' | 'pill'
@@ -81,6 +82,7 @@ export const Island: React.FC<IslandProps> = ({
   children,
 }) => {
   const dim = getIslandDimensions(state, isHovered, notchStyle, hasNotification)
+  const reducedMotion = usePrefersReducedMotion()
 
   // Synchronize exact hit-test rectangle with Electron main process (coucou pattern)
   useEffect(() => {
@@ -111,17 +113,19 @@ export const Island: React.FC<IslandProps> = ({
           borderRadius: dim.borderRadius,
         }}
         transition={
-          isShrinking
-            ? {
-                duration: 0.32,
-                ease: [0.45, 0, 0.2, 1],
-              }
-            : {
-                type: 'spring',
-                stiffness: 420,
-                damping: 29,
-                mass: 0.85,
-              }
+          reducedMotion
+            ? { duration: 0 }
+            : isShrinking
+              ? {
+                  duration: 0.32,
+                  ease: [0.45, 0, 0.2, 1],
+                }
+              : {
+                  type: 'spring',
+                  stiffness: 420,
+                  damping: 29,
+                  mass: 0.85,
+                }
         }
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
@@ -149,7 +153,7 @@ export const Island: React.FC<IslandProps> = ({
           countdownFraction !== null &&
           countdownFraction > 0 && (
             <div
-              className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 h-[2px] rounded-full bg-white/35 transition-[width] duration-100"
+              className="pointer-events-none absolute bottom-0 left-1/2 -translate-x-1/2 h-[2px] rounded-full bg-white/35 transition-[width] duration-100 motion-reduce:transition-none"
               style={{ width: `${Math.round(countdownFraction * 160)}px` }}
             />
           )}

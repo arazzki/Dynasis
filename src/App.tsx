@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   Home,
   Music,
@@ -27,6 +27,7 @@ import { MediaIsland, MediaState } from './components/MediaIsland'
 import { PlayingBars } from './components/PlayingBars'
 import { ShelfIsland, ScreenshotItem } from './components/ShelfIsland'
 import { BatteryHUD, BatteryState } from './components/BatteryHUD'
+import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion'
 
 export type ExpandedView = 'overview' | 'apps' | 'media' | 'shelf' | 'settings'
 
@@ -141,6 +142,9 @@ export default function App() {
 
   const [clockText, setClockText] = useState('')
   const [countdownFraction, setCountdownFraction] = useState<number | null>(null)
+  // Ticking "now" so the compact pill progress line advances between SMTC polls.
+  const [mediaNow, setMediaNow] = useState(() => Date.now())
+  const reducedMotion = usePrefersReducedMotion()
 
   const dragStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
   const collapseDeadlineRef = useRef<number | null>(null)
@@ -279,6 +283,15 @@ export default function App() {
     const id = setInterval(updateClock, 10000)
     return () => clearInterval(id)
   }, [])
+
+  // 1s clock for the compact pill progress line. One tick per second is enough
+  // for a 1-2px line and keeps React out of the 60fps path.
+  useEffect(() => {
+    if (!media.isPlaying) return
+    setMediaNow(Date.now())
+    const id = setInterval(() => setMediaNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [media.isPlaying])
 
   // Auto-collapse countdown loop when Stealth Edge is disabled by user
   useEffect(() => {
@@ -819,6 +832,13 @@ export default function App() {
 
   const hasActiveMedia = media.isPlaying || (media.title && media.title !== 'No media playing')
 
+  // Compact pill progress line: SMTC only gives a snapshot of `position` taken
+  // at `updatedAt`, so extrapolate from the local 1s tick while playing.
+  const mediaElapsed =
+    media.isPlaying && media.updatedAt ? Math.max(0, (mediaNow - media.updatedAt) / 1000) : 0
+  const mediaPosition = media.duration > 0 ? Math.min(media.duration, media.position + mediaElapsed) : 0
+  const mediaProgress = media.duration > 0 ? Math.min(1, Math.max(0, mediaPosition / media.duration)) : 0
+
   return (
     <div
       onDragOver={handleDragOver}
@@ -842,11 +862,11 @@ export default function App() {
             className="w-full h-full flex items-center justify-center cursor-pointer"
             title="Arahkan kursor ke tepi atas untuk membuka Dynasis"
           >
-            <div
-              className={`w-16 h-[2.5px] rounded-full transition-colors ${
-                media.isPlaying ? 'bg-emerald-400/85' : 'bg-white/35'
-              }`}
-            />
+            {media.isPlaying ? (
+              <PlayingBars mini />
+            ) : (
+              <div className="w-16 h-[2.5px] rounded-full bg-white/35" />
+            )}
           </div>
         )}
 
@@ -920,16 +940,24 @@ export default function App() {
                 >
                   {media.albumArt ? (
                     <motion.div
+                      // Remount on track change so the disc "pops in" instead of
+                      // swapping instantly. initial={false} when reduced motion is on.
+                      key={`${media.title}|${media.artist}`}
                       className="relative w-5 h-5 flex-shrink-0"
-                      animate={media.isPlaying ? { scale: [1, 1.05, 1] } : { scale: 1 }}
+                      initial={reducedMotion ? false : { opacity: 0, scale: 0.72 }}
+                      animate={
+                        media.isPlaying && !reducedMotion
+                          ? { scale: [1, 1.05, 1], opacity: 1 }
+                          : { scale: 1, opacity: 1 }
+                      }
                       transition={
-                        media.isPlaying
-                          ? { repeat: Infinity, duration: 3.2, ease: 'easeInOut' }
-                          : { duration: 0.2 }
+                        media.isPlaying && !reducedMotion
+                          ? { scale: { repeat: Infinity, duration: 3.2, ease: 'easeInOut' } }
+                          : { duration: 0.2, ease: [0.32, 0.72, 0, 1] }
                       }
                     >
                       {/* Soft halo behind the disc (opacity-only, cheap) */}
-                      {media.isPlaying && (
+                      {media.isPlaying && !reducedMotion && (
                         <motion.span
                           className="pointer-events-none absolute -inset-1 rounded-full bg-emerald-400/35 blur-[5px]"
                           animate={{ opacity: [0.35, 0.85, 0.35] }}
@@ -943,14 +971,16 @@ export default function App() {
                           media.isPlaying ? 'border-emerald-400/70' : 'border-white/15'
                         }`}
                         draggable={false}
-                        animate={media.isPlaying ? { rotate: 360 } : { rotate: 0 }}
+                        animate={
+                          media.isPlaying && !reducedMotion ? { rotate: 360 } : { rotate: 0 }
+                        }
                         transition={
-                          media.isPlaying
+                          media.isPlaying && !reducedMotion
                             ? { repeat: Infinity, duration: 14, ease: 'linear' }
                             : { duration: 0.3 }
                         }
                       />
-                      {media.isPlaying && (
+                      {media.isPlaying && !reducedMotion && (
                         <motion.span
                           className="pointer-events-none absolute inset-0 rounded-full border border-emerald-300/60"
                           animate={{ opacity: [0.5, 0, 0.5], scale: [1, 1.35, 1] }}
@@ -961,26 +991,42 @@ export default function App() {
                   ) : (
                     <span
                       className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        media.isPlaying ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-500/60'
+                        media.isPlaying
+                          ? 'bg-emerald-400 animate-pulse motion-reduce:animate-none'
+                          : 'bg-emerald-500/60'
                       }`}
                     />
                   )}
-                  <span className="text-[11.5px] font-semibold text-[#f5f6f8] truncate tracking-tight">
-                    {hasActiveMedia ? (
-                      <>
-                        {media.title}
-                        {media.artist &&
-                          media.artist !== 'Unknown Artist' &&
-                          !media.artist.startsWith('Klik Play') && (
-                            <span className="font-normal text-[#a5aab4]">
-                              {' '}
-                              - {media.artist}
-                            </span>
-                          )}
-                      </>
-                    ) : (
-                      'Dynasis'
-                    )}
+                  <span className="relative min-w-0 flex-1 overflow-hidden">
+                    <AnimatePresence initial={false} mode="wait">
+                      <motion.span
+                        key={hasActiveMedia ? `${media.title}|${media.artist}` : 'dynasis'}
+                        initial={reducedMotion ? false : { opacity: 0, y: 7 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -7 }}
+                        transition={{
+                          duration: reducedMotion ? 0 : 0.18,
+                          ease: [0.32, 0.72, 0, 1],
+                        }}
+                        className="block min-w-0 truncate text-[11.5px] font-semibold text-[#f5f6f8] tracking-tight"
+                      >
+                        {hasActiveMedia ? (
+                          <>
+                            {media.title}
+                            {media.artist &&
+                              media.artist !== 'Unknown Artist' &&
+                              !media.artist.startsWith('Klik Play') && (
+                                <span className="font-normal text-[#a5aab4]">
+                                  {' '}
+                                  - {media.artist}
+                                </span>
+                              )}
+                          </>
+                        ) : (
+                          'Dynasis'
+                        )}
+                      </motion.span>
+                    </AnimatePresence>
                   </span>
                 </div>
 
@@ -1028,6 +1074,19 @@ export default function App() {
                   </button>
                 </div>
               </>
+            )}
+
+            {/* Bottom progress line for the current track (2px, Dynamic Island style) */}
+            {!activeWaNotif && media.isPlaying && media.duration > 0 && (
+              <div className="pointer-events-none absolute inset-x-3 bottom-0 h-[2px] overflow-hidden rounded-full bg-white/[0.08]">
+                <div
+                  className="h-full w-full origin-left rounded-full bg-gradient-to-r from-emerald-500 to-emerald-300"
+                  style={{
+                    transform: `scaleX(${mediaProgress})`,
+                    transition: reducedMotion ? 'none' : 'transform 1s linear',
+                  }}
+                />
+              </div>
             )}
           </div>
         )}

@@ -1,9 +1,12 @@
 import React from 'react'
 import { motion } from 'framer-motion'
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion'
 
 interface PlayingBarsProps {
   /** Smaller variant used inside the compact pill. */
   compact?: boolean
+  /** Tiny variant used by the 5px stealth wake strip. */
+  mini?: boolean
   className?: string
 }
 
@@ -25,6 +28,9 @@ const TIMING = [
   { duration: 0.84, delay: 0.05 },
 ]
 
+/** Static frame used when the OS asks for reduced motion. */
+const STILL = [0.6, 0.85, 0.5, 0.75]
+
 /**
  * Equalizer bars for the "now playing" indicator.
  *
@@ -33,30 +39,47 @@ const TIMING = [
  * recalculated while music plays. The blurred glow behind the group is static
  * for the same reason.
  */
-export const PlayingBars: React.FC<PlayingBarsProps> = ({ compact = false, className = '' }) => {
-  const barWidth = compact ? 2.5 : 3
-  const barHeight = compact ? 12 : 14
+export const PlayingBars: React.FC<PlayingBarsProps> = ({
+  compact = false,
+  mini = false,
+  className = '',
+}) => {
+  const reducedMotion = usePrefersReducedMotion()
+
+  const barWidth = mini ? 2 : compact ? 2.5 : 3
+  const barHeight = mini ? 4 : compact ? 12 : 14
+  const gap = mini ? 'gap-[1.5px]' : compact ? 'gap-[2px]' : 'gap-[2.5px] px-1'
 
   return (
     <div
       aria-hidden="true"
-      className={`relative flex items-end ${compact ? 'gap-[2px]' : 'gap-[2.5px] px-1'} ${className}`}
+      className={`relative flex items-end ${gap} ${className}`}
       style={{ height: barHeight }}
     >
-      <span className="pointer-events-none absolute -inset-x-1 bottom-0 top-1/2 rounded-full bg-emerald-400/25 blur-[4px]" />
+      {!mini && (
+        <span className="pointer-events-none absolute -inset-x-1 bottom-0 top-1/2 rounded-full bg-emerald-400/25 blur-[4px]" />
+      )}
       {SHAPES.map((shape, i) => (
         <motion.span
           key={i}
-          className="relative origin-bottom rounded-full bg-gradient-to-t from-emerald-500 via-emerald-400 to-emerald-200"
+          className={
+            mini
+              ? 'relative origin-bottom rounded-full bg-emerald-400/85'
+              : 'relative origin-bottom rounded-full bg-gradient-to-t from-emerald-500 via-emerald-400 to-emerald-200'
+          }
           style={{ width: barWidth, height: barHeight }}
-          animate={{ scaleY: shape }}
-          transition={{
-            repeat: Infinity,
-            repeatType: 'mirror',
-            duration: TIMING[i].duration,
-            delay: TIMING[i].delay,
-            ease: 'easeInOut',
-          }}
+          animate={{ scaleY: reducedMotion ? STILL[i] : shape }}
+          transition={
+            reducedMotion
+              ? { duration: 0 }
+              : {
+                  repeat: Infinity,
+                  repeatType: 'mirror',
+                  duration: TIMING[i].duration,
+                  delay: TIMING[i].delay,
+                  ease: 'easeInOut',
+                }
+          }
         />
       ))}
     </div>
